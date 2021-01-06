@@ -154,54 +154,48 @@ uint8_t localPalette[256 * 3];
 
 uint16_t delayTime;
 
-uint8_t extBuffer[64];
+uint8_t extBuffer[256];
 
 int frameIdx = 0;
 uint8_t frame[128 * 32];
 
-uint8_t dictBuffer[128 * 32 * 4];
 struct {
-	uint16_t idx;
-	uint16_t l;
+	uint16_t prev;
+	uint8_t k;
 } dict[4096];
 int dictSize = 0;
+int colorCount;
 
 void ClearDict(int mcs) {
-	for(int i = 0; i < 4096; i++) {
-		if(i < (1<< mcs)) {
-			dict[i].idx = i;
-			dict[i].l = 1;
-			dictBuffer[dict[i].idx] = i; // ith color at ith entry
-		}
-		else {
-			dict[i].idx = 1 << mcs;
-			dict[i].l = 0;
-		}
-	}
-
-
-	dictSize = (1<< mcs) + 2;
+	colorCount = 1 << mcs;
+	dictSize = colorCount + 2;
 }
 
-uint8_t imageSubData[256];
-uint8_t imageSubDataSize = 0;
+uint8_t imageSubData[2048];
+uint16_t imageSubDataSize = 0;
 int imageSubDataIdx = 0;
 int imageSubDataBitsLeft = 8;
 
 int LoadImageSubData() {
+	imageSubDataSize = 0;
 	imageSubDataIdx = 0;
 	imageSubDataBitsLeft = 8;
 
 	UINT l;
-	FRESULT res = f_read(&file, &imageSubDataSize, 1, &l);
-	if(res != FR_OK)
-		SendUART("Error while reading data!");
+	while(imageSubDataSize < 6 * 256) {
+		uint8_t size;
+		FRESULT res = f_read(&file, &size, 1, &l);
+		if(res != FR_OK)
+			SendUART("Error while reading data!");
 
-	if(imageSubDataSize > 0) {
-		//printf2("data size = %d\r\n", imageSubDataSize);
-		f_read(&file, imageSubData, imageSubDataSize, &l);
-		//PROFILING_EVENT("LoadImageSubData");
-		return 1;
+		if(size > 0) {
+			//printf2("data size = %d\r\n", imageSubDataSize);
+			f_read(&file, imageSubData + imageSubDataSize, size, &l);
+			PROFILING_EVENT("LoadImageSubData");
+			imageSubDataSize += size;
+		}
+		else
+			break;
 	}
 
 
@@ -219,9 +213,10 @@ uint16_t GetNextCode(int codeSize) {
 			bitCount += imageSubDataBitsLeft;
 
 			imageSubDataIdx++;
-			if(imageSubDataIdx >= imageSubDataSize)
-				if(!LoadImageSubData())
-					break;
+			if(imageSubDataIdx >= imageSubDataSize) {
+				PROFILING_EVENT("Decode block");
+				LoadImageSubData();
+			}
 
 			imageSubDataBitsLeft = 8;
 		}
@@ -232,6 +227,19 @@ uint16_t GetNextCode(int codeSize) {
 	}
 
 	return code & ((1 << codeSize) - 1);
+}
+
+// return first pixel
+uint8_t CopyPixels(uint16_t code) {
+	if(code < colorCount) { // if it's a color
+		frame[frameIdx++] = code;
+		return code;
+	}
+
+	// else recursive call
+	uint8_t res = CopyPixels(dict[code].prev);
+	frame[frameIdx++] = dict[code].k;
+	return res;
 }
 
 void Decode(int mcs) {
@@ -256,20 +264,14 @@ void Decode(int mcs) {
 		else if(current == eoi)
 			return; // we're done decoding
 
-		else if(dict[current].l > 0) {
+		else if(current < dictSize) {
 			// output
-			for(int i = 0; i < dict[current].l; i++)
-				frame[frameIdx++] = dictBuffer[dict[current].idx + i];
+			uint8_t k = CopyPixels(current);
 
 			if(last != clearCode) {
-				uint8_t k = dictBuffer[dict[current].idx];
-
 				// add new code
-				dict[dictSize].idx = dict[dictSize - 1].idx + dict[dictSize - 1].l;
-				dict[dictSize].l = dict[last].l + 1;
-				for(int i = 0; i < dict[dictSize].l; i++)
-					dictBuffer[dict[dictSize].idx + i] = i == dict[dictSize].l - 1 ? k : dictBuffer[dict[last].idx + i];
-
+				dict[dictSize].prev = last;
+				dict[dictSize].k = k;
 				dictSize++;
 
 				if(dictSize >= (1 << compressedSize))
@@ -277,18 +279,12 @@ void Decode(int mcs) {
 			}
 		}
 		else {
-			uint8_t k = dictBuffer[dict[last].idx];
-
-			// output
-			for(int i = 0; i < dict[last].l; i++)
-				frame[frameIdx++] = dictBuffer[dict[last].idx + i];
-			frame[frameIdx++] = k;
+			uint8_t k = CopyPixels(last);
+			CopyPixels(k);
 
 			// add new code
-			dict[dictSize].idx = dict[dictSize - 1].idx + dict[dictSize - 1].l;
-			dict[dictSize].l = dict[last].l + 1;
-			for(int i = 0; i < dict[dictSize].l; i++)
-				dictBuffer[dict[dictSize].idx + i] = i == dict[dictSize].l - 1 ? k : dictBuffer[dict[last].idx + i];
+			dict[dictSize].prev = last;
+			dict[dictSize].k = k;
 
 			dictSize++;
 
@@ -327,11 +323,11 @@ void ReadGifImage() {
 		if(sep == 0x3b) // rewind
 			f_lseek(&file, gifStart);
 
-		if(sep == 0x21) {
+		else if(sep == 0x21) {
 			GifExtensionHeader extHeader;
 			f_read(&file, &extHeader, sizeof(GifExtensionHeader), &l);
 
-			if(extHeader.label == 0xf9) {
+			if(extHeader.label == 0xF9) {
 				//SendUART("---- Graphics Control Extension ----\r\n");
 				GifGraphicsControlExtension desc;
 				f_read(&file, &desc, sizeof(GifGraphicsControlExtension), &l);
@@ -342,6 +338,14 @@ void ReadGifImage() {
 
 				//SendUART("\r\n");
 			}
+			else if(extHeader.label == 0xFF) {
+				// Application Extension
+				f_read(&file, &extBuffer, 16, &l);
+			}
+			else if(extHeader.label == 0xFE) {
+				// Application Extension
+				f_read(&file, &extBuffer, extHeader.blockSize + 1, &l);
+			}
 			else {
 				sprintf(strBuffer, "---- Unknown Extension %#X ----\r\n", extHeader.label);
 				//SendUART(strBuffer);
@@ -351,7 +355,7 @@ void ReadGifImage() {
 			}
 		}
 
-		if(sep == 0x2c) {
+		else if(sep == 0x2c) {
 			// image data
 			//SendUART("---- Image Descriptor ----\r\n");
 
@@ -374,22 +378,10 @@ void ReadGifImage() {
 			res = f_read(&file, &mcs, 1, &l);
 			sprintf(strBuffer, "MCS = %d\r\n", mcs);
 			SendUART(strBuffer);
+			PROFILING_EVENT("FindImage");
 
 			Decode(mcs);
-
-			// dump image to console
-			/*
-			for(int y = 0; y < 32; y++) {
-				for(int x = 0; x < 128; x++) {
-					char c[2] = {0, 0};
-					c[0] = 32 + frame[x + y * 128];
-					SendUART(c);
-				}
-				SendUART("\r\n");
-			}
-
-			SendUART("\r\n");
-			*/
+			PROFILING_EVENT("Decode");
 			break;
 		}
 	}
