@@ -62,15 +62,25 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void SendUART(char *txt) {
-#if 0
+#if 1
 	while(CDC_Transmit_FS(txt, strlen(txt)) == USBD_BUSY) {
 	}
 #else
-	CDC_Transmit_FS(txt, strlen(txt));
+	//CDC_Transmit_FS(txt, strlen(txt));
 #endif
 }
 
 static char strBuffer[512];
+
+#include <stdio.h>
+#include <stdarg.h>
+void printf2(char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(strBuffer, 255, format, args);
+    SendUART(strBuffer);
+    va_end(args);
+}
 
 void ScanDirectory(char *path) {
 	DIR dir;
@@ -188,11 +198,12 @@ int LoadImageSubData() {
 		SendUART("Error while reading data!");
 
 	if(imageSubDataSize > 0) {
-		sprintf(strBuffer, "data size = %d\r\n", imageSubDataSize);
-		SendUART(strBuffer);
+		//printf2("data size = %d\r\n", imageSubDataSize);
 		f_read(&file, imageSubData, imageSubDataSize, &l);
+		//PROFILING_EVENT("LoadImageSubData");
 		return 1;
 	}
+
 
 	return 0; // no more data!
 }
@@ -458,18 +469,16 @@ void FillDMDBuffer() {
 	int idx = 0;
 	for(int p = 0; p < 8; p++) {
 		uint8_t m = 1 << p;
-		for(int y = 0; y < 16; y++) {
-			for(int x = 0; x < 128; x++) {
-				uint8_t col0 = frame[x + y * 128];
-				uint8_t px0 = (globalPalette[col0 * 3 + 0] & m ? 1 : 0) + (globalPalette[col0 * 3 + 1] & m ? 2 : 0) + (globalPalette[col0 * 3 + 2] & m ? 4 : 0);
+		int idx2 = 0;
+		for(int j = 0;  j < 128 * 16; j++) {
+			uint8_t col0 = frame[idx2];
+			uint8_t px0 = (globalPalette[col0 * 3 + 0] & m ? 1 : 0) + (globalPalette[col0 * 3 + 1] & m ? 2 : 0) + (globalPalette[col0 * 3 + 2] & m ? 4 : 0);
 
-				uint8_t col1 = frame[x + (y + 16) * 128];
-				uint8_t px1 = (globalPalette[col1 * 3 + 0] & m ? 1 : 0) + (globalPalette[col1 * 3 + 1] & m ? 2 : 0) + (globalPalette[col1 * 3 + 2] & m ? 4 : 0);
+			uint8_t col1 = frame[idx2++ + 16 * 128];
+			uint8_t px1 = (globalPalette[col1 * 3 + 0] & m ? 1 : 0) + (globalPalette[col1 * 3 + 1] & m ? 2 : 0) + (globalPalette[col1 * 3 + 2] & m ? 4 : 0);
 
-
-				writeBuffer[idx++] = px0 + (px1 << 3);
-				writeBuffer[idx++] = px0 + (px1 << 3) + 64;
-			}
+			writeBuffer[idx++] = px0 + (px1 << 3);
+			writeBuffer[idx++] = px0 + (px1 << 3) + 64;
 		}
 	}
 }
@@ -508,14 +517,12 @@ void SendFrame() {
 	// send data
 #if 0 // without DMA
 	/*
-	GPIOA->ODR |= (1 << 8); // profile
 	uint16_t idx = y * 256 + prevPass * 256 * 16;
 	uint16_t v = GPIOB->ODR & ~(0xFF);
 	for(int x = 0; x < 256; x++) {
 		//GPIOB->ODR =  (y == 0 || y == 1) ? (x % 2 ? 9 : 73) : ((GPIOB->ODR & ~(0xFF)) | DMDBuffer[x + (y * 256) + pass * 256*16]);
 		GPIOB->ODR = (v | readBuffer[idx++]);
 	}
-	GPIOA->ODR &= ~(1 << 8); // profile
 	*/
 #else // With DMA
 	// DMA2_Stream5->NDTR = 256;
@@ -597,11 +604,11 @@ int main(void)
 
   //ScanDirectory("Arcade");
   //ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  //ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //ReadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
   //ReadGif("Other/OTHER_SCROLL_StarWars02.gif");
   //ReadGif("XXX_Mature/XXX_PC_MUGEN_Maishiranui_RattenJager.gif");
-  ReadGif("Arcade/ARCADE_Skycurser.gif");
+  //ReadGif("Arcade/ARCADE_Skycurser.gif");
 
   SendUART("Ended SD card\r\n");
 
@@ -613,6 +620,9 @@ int main(void)
   HAL_TIM_PWM_Init(&htim4);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+  HAL_TIM_OC_Init(&htim1);
+  HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_1);
+
   /* Callbacks for DMA IRQs */
   htim1.hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = data_tramsmitted_handler;
   htim1.hdma[TIM_DMA_ID_UPDATE]->XferErrorCallback = transmit_error_handler;
@@ -623,9 +633,19 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+	PROFILING_START("*session name*");
+
 	ReadGifImage();
+	PROFILING_EVENT("ReadGifImage");
+
+
 	FillDMDBuffer();
+	PROFILING_EVENT("FillDMDBuffer");
+
 	SwapBuffer();
+	PROFILING_EVENT("SwapBuffer");
+
+	PROFILING_STOP();
 
 	//SendUART("Oh!\r\n");
   }
