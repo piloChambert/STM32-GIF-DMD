@@ -26,7 +26,7 @@
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim4;
-DMA_HandleTypeDef hdma_tim1_ch4_trig_com;
+DMA_HandleTypeDef hdma_tim1_up;
 
 /* TIM1 init function */
 void MX_TIM1_Init(void)
@@ -70,7 +70,7 @@ void MX_TIM4_Init(void)
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
   {
     Error_Handler();
@@ -114,27 +114,26 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* tim_baseHandle)
     __HAL_RCC_TIM1_CLK_ENABLE();
 
     /* TIM1 DMA Init */
-    /* TIM1_CH4_TRIG_COM Init */
-    hdma_tim1_ch4_trig_com.Instance = DMA2_Stream4;
-    hdma_tim1_ch4_trig_com.Init.Channel = DMA_CHANNEL_6;
-    hdma_tim1_ch4_trig_com.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    hdma_tim1_ch4_trig_com.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_tim1_ch4_trig_com.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_tim1_ch4_trig_com.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_tim1_ch4_trig_com.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_tim1_ch4_trig_com.Init.Mode = DMA_NORMAL;
-    hdma_tim1_ch4_trig_com.Init.Priority = DMA_PRIORITY_LOW;
-    hdma_tim1_ch4_trig_com.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-    if (HAL_DMA_Init(&hdma_tim1_ch4_trig_com) != HAL_OK)
+    /* TIM1_UP Init */
+    hdma_tim1_up.Instance = DMA2_Stream5;
+    hdma_tim1_up.Init.Channel = DMA_CHANNEL_6;
+    hdma_tim1_up.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_tim1_up.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_tim1_up.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_tim1_up.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_tim1_up.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_tim1_up.Init.Mode = DMA_NORMAL;
+    hdma_tim1_up.Init.Priority = DMA_PRIORITY_VERY_HIGH;
+    hdma_tim1_up.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
+    hdma_tim1_up.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+    hdma_tim1_up.Init.MemBurst = DMA_MBURST_INC16;
+    hdma_tim1_up.Init.PeriphBurst = DMA_PBURST_SINGLE;
+    if (HAL_DMA_Init(&hdma_tim1_up) != HAL_OK)
     {
       Error_Handler();
     }
 
-    /* Several peripheral DMA handle pointers point to the same DMA handle.
-     Be aware that there is only one stream to perform all the requested DMAs. */
-    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_CC4],hdma_tim1_ch4_trig_com);
-    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_TRIGGER],hdma_tim1_ch4_trig_com);
-    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_COMMUTATION],hdma_tim1_ch4_trig_com);
+    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_UPDATE],hdma_tim1_up);
 
   /* USER CODE BEGIN TIM1_MspInit 1 */
 
@@ -196,9 +195,7 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle)
     __HAL_RCC_TIM1_CLK_DISABLE();
 
     /* TIM1 DMA DeInit */
-    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_CC4]);
-    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_TRIGGER]);
-    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_COMMUTATION]);
+    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_UPDATE]);
   /* USER CODE BEGIN TIM1_MspDeInit 1 */
 
   /* USER CODE END TIM1_MspDeInit 1 */

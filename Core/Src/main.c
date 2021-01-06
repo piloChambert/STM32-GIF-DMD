@@ -496,18 +496,18 @@ void SendFrame() {
 	}
 
 	TIM4->ARR = 0x1FFF;
-	uint16_t litTime = (0x1FFF - 0x100) >> (7 - prevPass);
-	TIM4->CCR2 = 0x1FFF - litTime;
-	TIM4->PSC = 0;//(1 << prevPass) - 1;
+	uint16_t litTime = (0x1FFF - 0x0040) >> (7 - prevPass);
+	TIM4->CCR2 = 0x1FFF - (litTime >> 0);
+	TIM4->PSC = 0;
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
 	TIM4->CNT = 0; // reset counter
 
-
-
 	TIM4->CR1 |= TIM_CR1_CEN;
 
 	// send data
+#if 0 // without DMA
+	/*
 	GPIOA->ODR |= (1 << 8); // profile
 	uint16_t idx = y * 256 + prevPass * 256 * 16;
 	uint16_t v = GPIOB->ODR & ~(0xFF);
@@ -516,6 +516,35 @@ void SendFrame() {
 		GPIOB->ODR = (v | readBuffer[idx++]);
 	}
 	GPIOA->ODR &= ~(1 << 8); // profile
+	*/
+#else // With DMA
+	// DMA2_Stream5->NDTR = 256;
+	// DMA2_Stream5->M0AR = (uint32_t)&readBuffer[ y * 256 + prevPass * 256 * 16];
+	// DMA2_Stream5->PAR = (uint32_t)&GPIOB->ODR;
+	// DMA2->LIFCR = 0b111101;
+	// DMA2_Stream5->CR |= DMA_SxCR_EN; // enable channel
+    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE],(uint32_t)&readBuffer[y * 256 + prevPass * 256 * 16], (uint32_t)&GPIOB->ODR, 256);
+
+    // TIM1->DIER = TIM_DMA_UPDATE;
+    __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_UPDATE);
+
+    // TIM1->CR1 = TIM_CR1_CEN;
+    __HAL_TIM_ENABLE(&htim1);
+#endif
+}
+
+/* 9 (DMA IRQ callbacks) */
+void data_tramsmitted_handler(DMA_HandleTypeDef *hdma)
+{
+    /* Stop timer */
+    __HAL_TIM_DISABLE(&htim1); //TIM1->CR1 &= ~TIM_CR1_CEN;
+}
+
+void transmit_error_handler(DMA_HandleTypeDef *hdma)
+{
+    /* Stop timer */
+    __HAL_TIM_DISABLE(&htim1);
+    /* Some error handle ? */
 }
 
 /* USER CODE END 0 */
@@ -555,13 +584,11 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  unsigned short pinState = 0;
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-
-  //HAL_Delay(1000);
   SendUART("Start:\r\n");
   if(f_mount(&fs, "", 0) != FR_OK)
 	  SendUART("Error (sdcard): can't mount sdcard\r\n");
@@ -570,10 +597,11 @@ int main(void)
 
   //ScanDirectory("Arcade");
   //ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  //ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //ReadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
-
-
+  //ReadGif("Other/OTHER_SCROLL_StarWars02.gif");
+  //ReadGif("XXX_Mature/XXX_PC_MUGEN_Maishiranui_RattenJager.gif");
+  ReadGif("Arcade/ARCADE_Skycurser.gif");
 
   SendUART("Ended SD card\r\n");
 
@@ -584,6 +612,10 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_TIM_PWM_Init(&htim4);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+
+  /* Callbacks for DMA IRQs */
+  htim1.hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = data_tramsmitted_handler;
+  htim1.hdma[TIM_DMA_ID_UPDATE]->XferErrorCallback = transmit_error_handler;
 
   while (1)
   {
