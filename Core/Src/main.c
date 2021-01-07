@@ -62,7 +62,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void SendUART(char *txt) {
-#if 1
+#if 0
 	while(CDC_Transmit_FS(txt, strlen(txt)) == USBD_BUSY) {
 	}
 #else
@@ -595,8 +595,8 @@ int main(void)
 	  SendUART("Success (sdcard): SD CARD mounted successfully\r\n");
 
   //ScanDirectory("Arcade");
-  //ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
+  //ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //ReadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
   //ReadGif("Other/OTHER_SCROLL_StarWars02.gif");
   //ReadGif("XXX_Mature/XXX_PC_MUGEN_Maishiranui_RattenJager.gif");
