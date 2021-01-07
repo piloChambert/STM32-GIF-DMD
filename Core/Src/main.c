@@ -171,7 +171,7 @@ void ClearDict(int mcs) {
 	dictSize = colorCount + 2;
 }
 
-uint8_t imageSubData[2048];
+uint8_t imageSubData[256];
 uint16_t imageSubDataSize = 0;
 int imageSubDataIdx = 0;
 int imageSubDataBitsLeft = 8;
@@ -182,22 +182,16 @@ int LoadImageSubData() {
 	imageSubDataBitsLeft = 8;
 
 	UINT l;
-	while(imageSubDataSize < 6 * 256) {
-		uint8_t size;
-		FRESULT res = f_read(&file, &size, 1, &l);
-		if(res != FR_OK)
-			SendUART("Error while reading data!");
+	FRESULT res = f_read(&file, &imageSubDataSize, 1, &l);
+	if(res != FR_OK)
+		SendUART("Error while reading data!");
 
-		if(size > 0) {
-			//printf2("data size = %d\r\n", imageSubDataSize);
-			f_read(&file, imageSubData + imageSubDataSize, size, &l);
-			PROFILING_EVENT("LoadImageSubData");
-			imageSubDataSize += size;
-		}
-		else
-			break;
+	if(imageSubDataSize > 0) {
+		//printf2("data size = %d\r\n", imageSubDataSize);
+		f_read(&file, imageSubData, imageSubDataSize, &l);
+		PROFILING_EVENT("LoadImageSubData");
+		return 1;
 	}
-
 
 	return 0; // no more data!
 }
@@ -431,7 +425,7 @@ void ReadGif(char *path) {
 	ReadGifImage();
 }
 
-uint8_t DMDBuffer[2][128 * 2 * 16 * 8];
+uint8_t DMDBuffer[2][256 * 16 * 8];
 
 
 uint8_t *readBuffer = DMDBuffer[0];
@@ -469,8 +463,8 @@ void FillDMDBuffer() {
 			uint8_t col1 = frame[idx2++ + 16 * 128];
 			uint8_t px1 = (globalPalette[col1 * 3 + 0] & m ? 1 : 0) + (globalPalette[col1 * 3 + 1] & m ? 2 : 0) + (globalPalette[col1 * 3 + 2] & m ? 4 : 0);
 
-			writeBuffer[idx++] = px0 + (px1 << 3);
-			writeBuffer[idx++] = px0 + (px1 << 3) + 64;
+			writeBuffer[idx++] = px0 + (px1 << 5);
+			writeBuffer[idx++] = px0 + (px1 << 5) + 8;
 		}
 	}
 }
@@ -498,7 +492,7 @@ void SendFrame() {
 
 	TIM4->ARR = 0x1FFF;
 	uint16_t litTime = (0x1FFF - 0x0040) >> (7 - prevPass);
-	TIM4->CCR2 = 0x1FFF - (litTime >> 0);
+	TIM4->CCR4 = 0x1FFF - (litTime >> 0);
 	TIM4->PSC = 0;
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
@@ -610,10 +604,10 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_TIM_PWM_Init(&htim4);
-  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
 
-  HAL_TIM_OC_Init(&htim1);
-  HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Init(&htim1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* Callbacks for DMA IRQs */
   htim1.hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = data_tramsmitted_handler;
