@@ -21,7 +21,7 @@
 #include "main.h"
 #include "dma.h"
 #include "fatfs.h"
-#include "spi.h"
+#include "sdio.h"
 #include "tim.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -147,6 +147,7 @@ typedef struct __attribute__((packed))
 
 int globalPaletteColorCount;
 uint8_t globalPalette[256 * 3];
+uint8_t codedGlobalPalette[256 * 8];
 
 int useLocalPalette;
 int localPaletteColorCount;
@@ -162,6 +163,7 @@ uint8_t frame[128 * 32];
 struct {
 	uint16_t prev;
 	uint8_t k;
+	uint8_t l;
 } dict[4096];
 int dictSize = 0;
 int colorCount;
@@ -189,7 +191,6 @@ int LoadImageSubData() {
 	if(imageSubDataSize > 0) {
 		//printf2("data size = %d\r\n", imageSubDataSize);
 		f_read(&file, imageSubData, imageSubDataSize, &l);
-		PROFILING_EVENT("LoadImageSubData");
 		return 1;
 	}
 
@@ -208,7 +209,6 @@ uint16_t GetNextCode(int codeSize) {
 
 			imageSubDataIdx++;
 			if(imageSubDataIdx >= imageSubDataSize) {
-				PROFILING_EVENT("Decode block");
 				LoadImageSubData();
 			}
 
@@ -225,6 +225,11 @@ uint16_t GetNextCode(int codeSize) {
 
 // return first pixel
 uint8_t CopyPixels(uint16_t code) {
+	if(frameIdx > 4096 || code > 4096) {
+		printf2("NOOOO!!\r\n");
+	}
+
+
 	if(code < colorCount) { // if it's a color
 		frame[frameIdx++] = code;
 		return code;
@@ -294,6 +299,16 @@ uint8_t sRGB2RGB(uint8_t v) {
 	return powf(v / 255.0f, 2.2f) * 255.0f;
 }
 
+void CodePalette(uint8_t *palette, int colorCount) {
+	for(int p = 0; p < 8; p++) {
+		uint8_t m = 1 << p;
+
+		for(int i = 0; i < colorCount; i++) {
+			codedGlobalPalette[i + p * 256] = (palette[i * 3 + 0] & m ? 1 : 0) + (palette[i * 3 + 1] & m ? 2 : 0) + (palette[i * 3 + 2] & m ? 4 : 0);
+		}
+	}
+}
+
 void ReadGifPalette(uint8_t *palette, int colorCount) {
 	UINT l;
 	if(f_read(&file, palette, sizeof(uint8_t) * 3 * colorCount, &l) != FR_OK) {
@@ -305,6 +320,8 @@ void ReadGifPalette(uint8_t *palette, int colorCount) {
 	for(int i = 0; i < colorCount * 3; i++) {
 		palette[i] = sRGB2RGB(palette[i]);
 	}
+
+	CodePalette(palette, colorCount);
 }
 
 void ReadGifImage() {
@@ -452,19 +469,28 @@ void InitDMDBuffer() {
 }
 
 void FillDMDBuffer() {
-	int idx = 0;
-	for(int p = 0; p < 8; p++) {
+	uint16_t idx = 0;
+	for(uint8_t p = 0; p < 8; p++) {
 		uint8_t m = 1 << p;
-		int idx2 = 0;
-		for(int j = 0;  j < 128 * 16; j++) {
+		uint16_t idx2 = 0;
+		for(uint16_t j = 0;  j < 128 * 16; j++) {
+			/*
 			uint8_t col0 = frame[idx2];
 			uint8_t px0 = (globalPalette[col0 * 3 + 0] & m ? 1 : 0) + (globalPalette[col0 * 3 + 1] & m ? 2 : 0) + (globalPalette[col0 * 3 + 2] & m ? 4 : 0);
 
 			uint8_t col1 = frame[idx2++ + 16 * 128];
 			uint8_t px1 = (globalPalette[col1 * 3 + 0] & m ? 1 : 0) + (globalPalette[col1 * 3 + 1] & m ? 2 : 0) + (globalPalette[col1 * 3 + 2] & m ? 4 : 0);
+			 */
 
-			writeBuffer[idx++] = px0 + (px1 << 5);
-			writeBuffer[idx++] = px0 + (px1 << 5) + 8;
+			uint8_t col0 = frame[idx2];
+			uint8_t px0 = codedGlobalPalette[p * 256 + col0];
+
+			uint8_t col1 = frame[idx2++ + 16 * 128];
+			uint8_t px1 = codedGlobalPalette[p * 256 + col1];
+
+			uint8_t v = px0 + (px1 << 5);
+			writeBuffer[idx++] = v;
+			//writeBuffer[idx++] = v + 8; // 8 == pixel clock
 		}
 	}
 }
@@ -490,10 +516,11 @@ void SendFrame() {
 		pass = 0;
 	}
 
-	TIM4->ARR = 0x1FFF;
-	uint16_t litTime = (0x1FFF - 0x0040) >> (7 - prevPass);
-	TIM4->CCR4 = 0x1FFF - (litTime >> 0);
 	TIM4->PSC = 0;
+	uint16_t period = 0x1FFF;
+	TIM4->ARR = period;
+	uint16_t litTime = (period - 0x0040) >> (7 - prevPass);
+	TIM4->CCR4 = period - (litTime >> 0);
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
 	TIM4->CNT = 0; // reset counter
@@ -516,10 +543,14 @@ void SendFrame() {
 	// DMA2_Stream5->PAR = (uint32_t)&GPIOB->ODR;
 	// DMA2->LIFCR = 0b111101;
 	// DMA2_Stream5->CR |= DMA_SxCR_EN; // enable channel
-    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE],(uint32_t)&readBuffer[y * 256 + prevPass * 256 * 16], (uint32_t)&GPIOB->ODR, 256);
+    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE],(uint32_t)&readBuffer[y * 128 + prevPass * 128 * 16], (uint32_t)&GPIOB->ODR, 128);
 
     // TIM1->DIER = TIM_DMA_UPDATE;
     __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_UPDATE);
+
+    TIM1->PSC = 3;
+	TIM1->ARR = 8;
+	TIM1->CCR1 = 4;
 
     // TIM1->CR1 = TIM_CR1_CEN;
     __HAL_TIM_ENABLE(&htim1);
@@ -572,29 +603,35 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USB_DEVICE_Init();
-  MX_SPI1_Init();
   MX_FATFS_Init();
   MX_TIM4_Init();
   MX_TIM1_Init();
+  MX_SDIO_SD_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  SendUART("Start:\r\n");
+  printf2("Start:\r\n");
   if(f_mount(&fs, "", 0) != FR_OK)
-	  SendUART("Error (sdcard): can't mount sdcard\r\n");
+	  printf2("Error (sdcard): can't mount sdcard\r\n");
   else
-	  SendUART("Success (sdcard): SD CARD mounted successfully\r\n");
+	  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
 
   //ScanDirectory("Arcade");
-  ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  //ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  //ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
+  ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //ReadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
   //ReadGif("Other/OTHER_SCROLL_StarWars02.gif");
-  //ReadGif("XXX_Mature/XXX_PC_MUGEN_Maishiranui_RattenJager.gif");
   //ReadGif("Arcade/ARCADE_Skycurser.gif");
+  //ReadGif("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
+  //ReadGif("Arcade/ARCADE_Outrun01.gif");
+  //ReadGif("Arcade/ARCADE_IkariWarriors.gif");
+
+
+
+
 
   SendUART("Ended SD card\r\n");
 

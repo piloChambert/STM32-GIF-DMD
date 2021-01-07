@@ -253,8 +253,8 @@ void OTG_FS_IRQHandler(void)
 void DMA2_Stream5_IRQHandler(void)
 {
   /* USER CODE BEGIN DMA2_Stream5_IRQn 0 */
-	TIM1->CR1 &= ~TIM_CR1_CEN;
-	TIM1->CNT = 0;
+  TIM1->CR1 &= ~TIM_CR1_CEN;
+  TIM1->CNT = 0;
   /* USER CODE END DMA2_Stream5_IRQn 0 */
   HAL_DMA_IRQHandler(&hdma_tim1_up);
   /* USER CODE BEGIN DMA2_Stream5_IRQn 1 */
