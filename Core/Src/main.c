@@ -65,6 +65,8 @@ void SendUART(char *txt) {
 #if 0
 	while(CDC_Transmit_FS(txt, strlen(txt)) == USBD_BUSY) {
 	}
+
+	//CDC_Transmit_FS(txt, strlen(txt));
 #else
 	//CDC_Transmit_FS(txt, strlen(txt));
 #endif
@@ -265,12 +267,22 @@ void Decode(int mcs) {
 
 		else if(current < dictSize) {
 			// output
-			uint8_t k = CopyPixels(current);
+			int l = current > colorCount ? dict[current].l : 1;
+			uint16_t k = current;
+			for(int i = l; i > 1; i--) {
+				frame[frameIdx + i-1] = dict[k].k;
+				k = dict[k].prev;
+			}
+			frame[frameIdx] = k;
+			frameIdx += l;
+
+			//uint8_t k = CopyPixels(current);
 
 			if(last != clearCode) {
 				// add new code
 				dict[dictSize].prev = last;
 				dict[dictSize].k = k;
+				dict[dictSize].l = (last < colorCount ? 1 : dict[last].l) + 1;
 				dictSize++;
 
 				if(dictSize >= (1 << compressedSize))
@@ -278,12 +290,26 @@ void Decode(int mcs) {
 			}
 		}
 		else {
+			// output
+			int l = last > colorCount ? dict[last].l : 1;
+			uint16_t k = last;
+			for(int i = l; i > 1; i--) {
+				frame[frameIdx + i-1] = dict[k].k;
+				k = dict[k].prev;
+			}
+			frame[frameIdx] = k;
+			frame[frameIdx + l] = k;
+			frameIdx += l + 1;
+
+			/*
 			uint8_t k = CopyPixels(last);
 			CopyPixels(k);
+			*/
 
 			// add new code
 			dict[dictSize].prev = last;
 			dict[dictSize].k = k;
+			dict[dictSize].l = l + 1;
 
 			dictSize++;
 
@@ -442,7 +468,7 @@ void ReadGif(char *path) {
 	ReadGifImage();
 }
 
-uint8_t DMDBuffer[2][256 * 16 * 8];
+uint8_t DMDBuffer[2][128 * 16 * 8];
 
 
 uint8_t *readBuffer = DMDBuffer[0];
@@ -454,6 +480,7 @@ void SwapBuffer() {
 }
 
 void InitDMDBuffer() {
+	uint16_t idx = 0;
 	for(int p = 0; p < 8; p++) {
 		uint8_t m = 1 << p;
 		for(int y = 0; y < 16; y++) {
@@ -461,8 +488,7 @@ void InitDMDBuffer() {
 				uint8_t c = x; //powf(x / 255.0f * 2.0f, 2.2f) * 255.0f;
 				uint8_t col0 = (c & m ? 1 : 0) + (c & m ? 2 : 0) + (c & m ? 4 : 0);
 				uint8_t col1 = (c & m ? 1 : 0) + (c & m ? 2 : 0) + (c & m ? 4 : 0);
-				writeBuffer[(x * 2 + 0 + (y * 256)) + p * 256 * 16] = col0 + (col1 << 3);
-				writeBuffer[(x * 2 + 1 + (y * 256)) + p * 256 * 16] = col0 + (col1 << 3) + 64;
+				writeBuffer[idx++] = col0 + (col1 << 3);
 			}
 		}
 	}
@@ -490,7 +516,6 @@ void FillDMDBuffer() {
 
 			uint8_t v = px0 + (px1 << 5);
 			writeBuffer[idx++] = v;
-			//writeBuffer[idx++] = v + 8; // 8 == pixel clock
 		}
 	}
 }
@@ -527,34 +552,23 @@ void SendFrame() {
 
 	TIM4->CR1 |= TIM_CR1_CEN;
 
-	// send data
-#if 0 // without DMA
-	/*
-	uint16_t idx = y * 256 + prevPass * 256 * 16;
-	uint16_t v = GPIOB->ODR & ~(0xFF);
-	for(int x = 0; x < 256; x++) {
-		//GPIOB->ODR =  (y == 0 || y == 1) ? (x % 2 ? 9 : 73) : ((GPIOB->ODR & ~(0xFF)) | DMDBuffer[x + (y * 256) + pass * 256*16]);
-		GPIOB->ODR = (v | readBuffer[idx++]);
-	}
-	*/
-#else // With DMA
-	// DMA2_Stream5->NDTR = 256;
-	// DMA2_Stream5->M0AR = (uint32_t)&readBuffer[ y * 256 + prevPass * 256 * 16];
-	// DMA2_Stream5->PAR = (uint32_t)&GPIOB->ODR;
+	// send data with DMA
+	// DMA2_Stream1->NDTR = 128;
+	// DMA2_Stream1->M0AR = (uint32_t)&readBuffer[ y * 128 + prevPass * 128 * 16];
+	// DMA2_Stream1->PAR = (uint32_t)&GPIOB->ODR;
 	// DMA2->LIFCR = 0b111101;
-	// DMA2_Stream5->CR |= DMA_SxCR_EN; // enable channel
-    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE],(uint32_t)&readBuffer[y * 128 + prevPass * 128 * 16], (uint32_t)&GPIOB->ODR, 128);
+	// DMA2_Stream1->CR |= DMA_SxCR_EN; // enable channel
+    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC1],(uint32_t)&readBuffer[(y + prevPass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
 
-    // TIM1->DIER = TIM_DMA_UPDATE;
-    __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_UPDATE);
+    // TIM1->DIER = TIM_DMA_CC1;
+    __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC1);
 
-    TIM1->PSC = 3;
-	TIM1->ARR = 8;
+    TIM1->PSC = 1;
+	TIM1->ARR = 7;
 	TIM1->CCR1 = 4;
 
     // TIM1->CR1 = TIM_CR1_CEN;
     __HAL_TIM_ENABLE(&htim1);
-#endif
 }
 
 /* 9 (DMA IRQ callbacks) */
@@ -613,6 +627,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  HAL_Delay(500);
   printf2("Start:\r\n");
   if(f_mount(&fs, "", 0) != FR_OK)
 	  printf2("Error (sdcard): can't mount sdcard\r\n");
@@ -647,8 +662,8 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* Callbacks for DMA IRQs */
-  htim1.hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = data_tramsmitted_handler;
-  htim1.hdma[TIM_DMA_ID_UPDATE]->XferErrorCallback = transmit_error_handler;
+  htim1.hdma[TIM_DMA_ID_CC1]->XferCpltCallback = data_tramsmitted_handler;
+  htim1.hdma[TIM_DMA_ID_CC1]->XferErrorCallback = transmit_error_handler;
 
   while (1)
   {

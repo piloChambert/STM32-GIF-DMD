@@ -26,7 +26,7 @@
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim4;
-DMA_HandleTypeDef hdma_tim1_up;
+DMA_HandleTypeDef hdma_tim1_ch1;
 
 /* TIM1 init function */
 void MX_TIM1_Init(void)
@@ -41,7 +41,7 @@ void MX_TIM1_Init(void)
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim1.Init.Period = 4;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.RepetitionCounter = 127;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
   {
@@ -53,6 +53,10 @@ void MX_TIM1_Init(void)
     Error_Handler();
   }
   if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OnePulse_Init(&htim1, TIM_OPMODE_SINGLE) != HAL_OK)
   {
     Error_Handler();
   }
@@ -143,26 +147,26 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* tim_baseHandle)
     __HAL_RCC_TIM1_CLK_ENABLE();
 
     /* TIM1 DMA Init */
-    /* TIM1_UP Init */
-    hdma_tim1_up.Instance = DMA2_Stream5;
-    hdma_tim1_up.Init.Channel = DMA_CHANNEL_6;
-    hdma_tim1_up.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    hdma_tim1_up.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_tim1_up.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_tim1_up.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_tim1_up.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_tim1_up.Init.Mode = DMA_NORMAL;
-    hdma_tim1_up.Init.Priority = DMA_PRIORITY_VERY_HIGH;
-    hdma_tim1_up.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
-    hdma_tim1_up.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
-    hdma_tim1_up.Init.MemBurst = DMA_MBURST_INC16;
-    hdma_tim1_up.Init.PeriphBurst = DMA_PBURST_SINGLE;
-    if (HAL_DMA_Init(&hdma_tim1_up) != HAL_OK)
+    /* TIM1_CH1 Init */
+    hdma_tim1_ch1.Instance = DMA2_Stream1;
+    hdma_tim1_ch1.Init.Channel = DMA_CHANNEL_6;
+    hdma_tim1_ch1.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_tim1_ch1.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_tim1_ch1.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_tim1_ch1.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_tim1_ch1.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_tim1_ch1.Init.Mode = DMA_NORMAL;
+    hdma_tim1_ch1.Init.Priority = DMA_PRIORITY_VERY_HIGH;
+    hdma_tim1_ch1.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
+    hdma_tim1_ch1.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+    hdma_tim1_ch1.Init.MemBurst = DMA_MBURST_INC16;
+    hdma_tim1_ch1.Init.PeriphBurst = DMA_PBURST_SINGLE;
+    if (HAL_DMA_Init(&hdma_tim1_ch1) != HAL_OK)
     {
       Error_Handler();
     }
 
-    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_UPDATE],hdma_tim1_up);
+    __HAL_LINKDMA(tim_baseHandle,hdma[TIM_DMA_ID_CC1],hdma_tim1_ch1);
 
   /* USER CODE BEGIN TIM1_MspInit 1 */
 
@@ -244,7 +248,7 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle)
     __HAL_RCC_TIM1_CLK_DISABLE();
 
     /* TIM1 DMA DeInit */
-    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_UPDATE]);
+    HAL_DMA_DeInit(tim_baseHandle->hdma[TIM_DMA_ID_CC1]);
   /* USER CODE BEGIN TIM1_MspDeInit 1 */
 
   /* USER CODE END TIM1_MspDeInit 1 */
