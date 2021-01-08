@@ -369,9 +369,8 @@ void ReadGifImage() {
 				GifGraphicsControlExtension desc;
 				f_read(&file, &desc, sizeof(GifGraphicsControlExtension), &l);
 
-				delayTime = desc.delayTime;
-				sprintf(strBuffer, "delay time: %d\r\n", delayTime);
-				//SendUART(strBuffer);
+				delayTime = desc.delayTime * 10; // us
+				//printf2("delay time: %d\r\n", delayTime);
 
 				//SendUART("\r\n");
 			}
@@ -424,7 +423,7 @@ void ReadGifImage() {
 	}
 }
 
-void ReadGif(char *path) {
+void LoadGif(char *path) {
 	if(f_open(&file, path, FA_READ) != FR_OK) {
 		SendUART("Can't open file!);");
 		return;
@@ -465,7 +464,6 @@ void ReadGif(char *path) {
 
 	// look for image data now
 	gifStart = f_tell(&file);
-	ReadGifImage();
 }
 
 uint8_t DMDBuffer[2][128 * 16 * 8];
@@ -558,12 +556,12 @@ void SendFrame() {
 	// DMA2_Stream1->PAR = (uint32_t)&GPIOB->ODR;
 	// DMA2->LIFCR = 0b111101;
 	// DMA2_Stream1->CR |= DMA_SxCR_EN; // enable channel
-    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC1],(uint32_t)&readBuffer[(y + prevPass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
+    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC2],(uint32_t)&readBuffer[(y + prevPass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
 
     // TIM1->DIER = TIM_DMA_CC1;
-    __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC1);
+    __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC2);
 
-    TIM1->PSC = 1;
+    TIM1->PSC = 3;
 	TIM1->ARR = 7;
 	TIM1->CCR1 = 4;
 
@@ -635,24 +633,25 @@ int main(void)
 	  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
 
   //ScanDirectory("Arcade");
-  //ReadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  ReadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
-  //ReadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
-  //ReadGif("Other/OTHER_SCROLL_StarWars02.gif");
-  //ReadGif("Arcade/ARCADE_Skycurser.gif");
-  //ReadGif("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
-  //ReadGif("Arcade/ARCADE_Outrun01.gif");
-  //ReadGif("Arcade/ARCADE_IkariWarriors.gif");
+  //LoadGif("Computers/AMIGA_MonkeyIsland01.gif");
+  //LoadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  //LoadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
+  //LoadGif("Other/OTHER_SCROLL_StarWars02.gif");
+  //LoadGif("Arcade/ARCADE_Skycurser.gif");
+  //LoadGif("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
+  //LoadGif("Arcade/ARCADE_Outrun01.gif");
+  //LoadGif("Arcade/ARCADE_IkariWarriors.gif");
+  //LoadGif("Computers/AMIGA_MonkeyIsland03.gif");
+  //LoadGif("Pinball_Story/PINBALL_STORY_GOT.gif");
+  LoadGif("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
 
+  printf2("Ended SD card\r\n");
 
-
-
-
-  SendUART("Ended SD card\r\n");
-
-  InitDMDBuffer();
+  ReadGifImage();
   FillDMDBuffer();
   SwapBuffer();
+  uint32_t prevFrameTick = HAL_GetTick();
+  uint32_t frameTick = 0; // display first frame now!
 
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_TIM_PWM_Init(&htim4);
@@ -662,8 +661,8 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* Callbacks for DMA IRQs */
-  htim1.hdma[TIM_DMA_ID_CC1]->XferCpltCallback = data_tramsmitted_handler;
-  htim1.hdma[TIM_DMA_ID_CC1]->XferErrorCallback = transmit_error_handler;
+  htim1.hdma[TIM_DMA_ID_CC2]->XferCpltCallback = data_tramsmitted_handler;
+  htim1.hdma[TIM_DMA_ID_CC2]->XferErrorCallback = transmit_error_handler;
 
   while (1)
   {
@@ -671,19 +670,23 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	PROFILING_START("*session name*");
+	  uint32_t currentTick = HAL_GetTick();
+	  if(currentTick - prevFrameTick > frameTick) {
+		  frameTick = delayTime;
+		  prevFrameTick = currentTick;
+		  PROFILING_START("*session name*");
 
-	ReadGifImage();
-	PROFILING_EVENT("ReadGifImage");
+		  SwapBuffer();
+		  PROFILING_EVENT("SwapBuffer");
+
+		  ReadGifImage();
+		  PROFILING_EVENT("ReadGifImage");
 
 
-	FillDMDBuffer();
-	PROFILING_EVENT("FillDMDBuffer");
-
-	SwapBuffer();
-	PROFILING_EVENT("SwapBuffer");
-
-	PROFILING_STOP();
+		  FillDMDBuffer();
+		  PROFILING_EVENT("FillDMDBuffer");
+		  PROFILING_STOP();
+	  }
 
 	//SendUART("Oh!\r\n");
   }
