@@ -28,7 +28,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "usbd_cdc_if.h"
+#include <math.h>
+#include "GIF.h"
+#include "profiling.h"
+
+extern unsigned char nocard_GIF[5988UL + 1];
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,7 +55,6 @@
 /* USER CODE BEGIN PV */
 FATFS fs;
 FIL file;
-FSIZE_t gifStart;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,358 +116,65 @@ void ScanDirectory(char *path) {
 	}
 }
 
-typedef struct __attribute__((packed))
-{
-    uint32_t  signatureHi;             //  "GIF8"
-    uint16_t  signatureLo;             //  GIF version: "7a" or "9a"
-    uint16_t  width;                   //  logical screen width in pixels
-    uint16_t  height;                  //  logical screen height in pixels
-    uint8_t   flags;                   //  Global Color Table specification
-    uint8_t   backgroundColorIndex;              //  background color
-    uint8_t   ratio;                   //  default pixel aspect ratio
-} GifHeader;
+int FileStreamRead(void* buff, UINT btr,	UINT *l) {
+	if(f_read(&file, buff, btr, l) != FR_OK)
+		return 0;
 
-typedef struct __attribute__((packed))
-{
-	uint8_t label;
-	uint8_t blockSize;
-} GifExtensionHeader;
-
-typedef struct __attribute__((packed))
-{
-	uint8_t flags;
-	uint16_t delayTime;
-	uint8_t transparentColorIndex;
-	uint8_t terminator; // always 0
-} GifGraphicsControlExtension;
-
-typedef struct __attribute__((packed))
-{
-	uint16_t left;         /* X position of image on the display */
-	uint16_t top;          /* Y position of image on the display */
-	uint16_t width;        /* Width of the image in pixels */
-	uint16_t height;       /* Height of the image in pixels */
-	uint8_t flags;       /* Image and Color Table Data Information */
-} GifImageDescriptor;
-
-
-int globalPaletteColorCount;
-uint8_t globalPalette[256 * 3];
-uint8_t codedGlobalPalette[256 * 8];
-
-int useLocalPalette;
-int localPaletteColorCount;
-uint8_t localPalette[256 * 3];
-
-uint16_t delayTime;
-
-uint8_t extBuffer[256];
-
-int frameIdx = 0;
-uint8_t frame[128 * 32];
-
-struct {
-	uint16_t prev;
-	uint8_t k;
-	uint8_t l;
-} dict[4096];
-int dictSize = 0;
-int colorCount;
-
-void ClearDict(int mcs) {
-	colorCount = 1 << mcs;
-	dictSize = colorCount + 2;
+	// else
+	return 1;
 }
 
-uint8_t imageSubData[256];
-uint16_t imageSubDataSize = 0;
-int imageSubDataIdx = 0;
-int imageSubDataBitsLeft = 8;
-
-int LoadImageSubData() {
-	imageSubDataSize = 0;
-	imageSubDataIdx = 0;
-	imageSubDataBitsLeft = 8;
-
-	UINT l;
-	FRESULT res = f_read(&file, &imageSubDataSize, 1, &l);
-	if(res != FR_OK)
-		SendUART("Error while reading data!");
-
-	if(imageSubDataSize > 0) {
-		//printf2("data size = %d\r\n", imageSubDataSize);
-		f_read(&file, imageSubData, imageSubDataSize, &l);
-		return 1;
-	}
-
-	return 0; // no more data!
+FSIZE_t FileStreamTell() {
+	return f_tell(&file);
 }
 
-uint16_t GetNextCode(int codeSize) {
-	uint16_t code = 0;
 
-	int bitCount = 0;
-	while(bitCount < codeSize) {
-		code += (imageSubData[imageSubDataIdx] >> (8 - imageSubDataBitsLeft)) << bitCount;
-
-		if(imageSubDataBitsLeft < codeSize - bitCount) {
-			bitCount += imageSubDataBitsLeft;
-
-			imageSubDataIdx++;
-			if(imageSubDataIdx >= imageSubDataSize) {
-				LoadImageSubData();
-			}
-
-			imageSubDataBitsLeft = 8;
-		}
-		else {
-			imageSubDataBitsLeft -= (codeSize - bitCount);
-			bitCount = codeSize;
-		}
-	}
-
-	return code & ((1 << codeSize) - 1);
+void FileStreamSeek(FSIZE_t pos) {
+	f_lseek(&file, pos);
 }
 
-// return first pixel
-uint8_t CopyPixels(uint16_t code) {
-	if(frameIdx > 4096 || code > 4096) {
-		printf2("NOOOO!!\r\n");
-	}
-
-
-	if(code < colorCount) { // if it's a color
-		frame[frameIdx++] = code;
-		return code;
-	}
-
-	// else recursive call
-	uint8_t res = CopyPixels(dict[code].prev);
-	frame[frameIdx++] = dict[code].k;
-	return res;
-}
-
-void Decode(int mcs) {
-	int compressedSize = mcs + 1;
-	int clearCode = 1 << mcs;
-	int eoi = clearCode + 1;
-
-	frameIdx = 0;
-
-	LoadImageSubData(); // load first data chunk
-
-	uint16_t current = 0;
-	uint16_t last = 0;
-
-	while(1) { // XXX warning!!!
-		// get current
-		current = GetNextCode(compressedSize);
-
-		if(current == clearCode)
-			ClearDict(mcs);
-
-		else if(current == eoi)
-			return; // we're done decoding
-
-		else if(current < dictSize) {
-			// output
-			int l = current > colorCount ? dict[current].l : 1;
-			uint16_t k = current;
-			for(int i = l; i > 1; i--) {
-				frame[frameIdx + i-1] = dict[k].k;
-				k = dict[k].prev;
-			}
-			frame[frameIdx] = k;
-			frameIdx += l;
-
-			//uint8_t k = CopyPixels(current);
-
-			if(last != clearCode) {
-				// add new code
-				dict[dictSize].prev = last;
-				dict[dictSize].k = k;
-				dict[dictSize].l = (last < colorCount ? 1 : dict[last].l) + 1;
-				dictSize++;
-
-				if(dictSize >= (1 << compressedSize))
-					compressedSize++;
-			}
-		}
-		else {
-			// output
-			int l = last > colorCount ? dict[last].l : 1;
-			uint16_t k = last;
-			for(int i = l; i > 1; i--) {
-				frame[frameIdx + i-1] = dict[k].k;
-				k = dict[k].prev;
-			}
-			frame[frameIdx] = k;
-			frame[frameIdx + l] = k;
-			frameIdx += l + 1;
-
-			/*
-			uint8_t k = CopyPixels(last);
-			CopyPixels(k);
-			*/
-
-			// add new code
-			dict[dictSize].prev = last;
-			dict[dictSize].k = k;
-			dict[dictSize].l = l + 1;
-
-			dictSize++;
-
-			if(dictSize >= (1 << compressedSize))
-				compressedSize++;
-		}
-
-		last = current;
-	}
-}
-
-uint8_t sRGB2RGB(uint8_t v) {
-	return powf(v / 255.0f, 2.2f) * 255.0f;
-}
-
-void CodePalette(uint8_t *palette, int colorCount) {
-	for(int p = 0; p < 8; p++) {
-		uint8_t m = 1 << p;
-
-		for(int i = 0; i < colorCount; i++) {
-			codedGlobalPalette[i + p * 256] = (palette[i * 3 + 0] & m ? 1 : 0) + (palette[i * 3 + 1] & m ? 2 : 0) + (palette[i * 3 + 2] & m ? 4 : 0);
-		}
-	}
-}
-
-void ReadGifPalette(uint8_t *palette, int colorCount) {
-	UINT l;
-	if(f_read(&file, palette, sizeof(uint8_t) * 3 * colorCount, &l) != FR_OK) {
-		SendUART("Can't read gif colors!);");
-		return;
-	}
-
-	// gamma correction ???
-	for(int i = 0; i < colorCount * 3; i++) {
-		palette[i] = sRGB2RGB(palette[i]);
-	}
-
-	CodePalette(palette, colorCount);
-}
-
-void ReadGifImage() {
-	UINT l;
-
-	while(1) {
-		uint8_t sep;
-		FRESULT res = f_read(&file, &sep, sizeof(uint8_t), &l);
-
-		if(sep == 0x3b) // rewind
-			f_lseek(&file, gifStart);
-
-		else if(sep == 0x21) {
-			GifExtensionHeader extHeader;
-			f_read(&file, &extHeader, sizeof(GifExtensionHeader), &l);
-
-			if(extHeader.label == 0xF9) {
-				//SendUART("---- Graphics Control Extension ----\r\n");
-				GifGraphicsControlExtension desc;
-				f_read(&file, &desc, sizeof(GifGraphicsControlExtension), &l);
-
-				delayTime = desc.delayTime * 10; // us
-				//printf2("delay time: %d\r\n", delayTime);
-
-				//SendUART("\r\n");
-			}
-			else if(extHeader.label == 0xFF) {
-				// Application Extension
-				f_read(&file, &extBuffer, 16, &l);
-			}
-			else if(extHeader.label == 0xFE) {
-				// Application Extension
-				f_read(&file, &extBuffer, extHeader.blockSize + 1, &l);
-			}
-			else {
-				sprintf(strBuffer, "---- Unknown Extension %#X ----\r\n", extHeader.label);
-				//SendUART(strBuffer);
-				// read remaining bytes
-				f_read(&file, &extBuffer, extHeader.blockSize, &l);
-				//SendUART("\r\n");
-			}
-		}
-
-		else if(sep == 0x2c) {
-			// image data
-			//SendUART("---- Image Descriptor ----\r\n");
-
-			GifImageDescriptor desc;
-			res = f_read(&file, &desc, sizeof(GifImageDescriptor), &l);
-
-			sprintf(strBuffer, "pos: %dx%d\r\nsize: %dx%d\r\n", desc.left, desc.top, desc.width, desc.height);
-			//SendUART(strBuffer);
-
-			localPaletteColorCount = 2 << (desc.flags & 0x07);
-			useLocalPalette = desc.flags & 0x80 ? 1 : 0;
-			if(useLocalPalette) {
-				ReadGifPalette(localPalette, localPaletteColorCount);
-			}
-
-			// decode GIF
-
-			// read min code size
-			uint8_t mcs;
-			res = f_read(&file, &mcs, 1, &l);
-			sprintf(strBuffer, "MCS = %d\r\n", mcs);
-			SendUART(strBuffer);
-			PROFILING_EVENT("FindImage");
-
-			Decode(mcs);
-			PROFILING_EVENT("Decode");
-			break;
-		}
-	}
-}
-
-void LoadGif(char *path) {
+void LoadGIFFile(const char *path) {
 	if(f_open(&file, path, FA_READ) != FR_OK) {
 		SendUART("Can't open file!);");
 		return;
 	}
 
+	GIFInfo.streamReadCallback = FileStreamRead;
+	GIFInfo.streamTellCallback = FileStreamTell;
+	GIFInfo.streamSeekCallback = FileStreamSeek;
 
-	GifHeader header;
-	UINT l;
-	if(f_read(&file, &header, sizeof(GifHeader), &l) != FR_OK) {
-		SendUART("Can't read gif header!);");
-		return;
-	}
+	LoadGIF();
+}
 
-	sprintf(strBuffer, "GIF resolution: %dx%d\r\n", header.width, header.height);
-	SendUART(strBuffer);
+uint8_t *memoryStreamPointer = NULL;
+uint8_t *memoryReadStreamPointer = NULL;
+int MemoryStreamRead(void* buff, UINT btr,	UINT *l) {
+	memcpy(buff, memoryReadStreamPointer, btr);
+	l = btr;
 
-	sprintf(strBuffer, "background color index: %d\r\n", header.backgroundColorIndex);
-	SendUART(strBuffer);
+	memoryReadStreamPointer += btr;
 
-	// read global palette
-	int hasColorTable = header.flags & 0x80 ? 1 : 0;
-	int colorResolution = 2 << ((header.flags & 0x70) >> 4);
-	globalPaletteColorCount = 2 << (header.flags & 0x07);
+	return 1;
+}
 
-	sprintf(strBuffer,"Color resolution: %d\r\n", colorResolution);
-	SendUART(strBuffer);
-
-	sprintf(strBuffer, "Has global color palette: %d\r\n", hasColorTable);
-	SendUART(strBuffer);
-
-	sprintf(strBuffer, "Color count: %d\r\n", globalPaletteColorCount);
-	SendUART(strBuffer);
+FSIZE_t MemoryStreamTell() {
+	return (memoryReadStreamPointer - memoryStreamPointer);
+}
 
 
-	if(hasColorTable) {
-		ReadGifPalette(globalPalette, globalPaletteColorCount);
-	}
+void MemoryStreamSeek(FSIZE_t pos) {
+	memoryReadStreamPointer = memoryStreamPointer + pos;
+}
 
-	// look for image data now
-	gifStart = f_tell(&file);
+void LoadGIFMemory(uint8_t *data) {
+	memoryStreamPointer = data;
+	memoryReadStreamPointer = data;
+
+	GIFInfo.streamReadCallback = MemoryStreamRead;
+	GIFInfo.streamTellCallback = MemoryStreamTell;
+	GIFInfo.streamSeekCallback = MemoryStreamSeek;
+
+	LoadGIF();
 }
 
 uint8_t DMDBuffer[2][128 * 16 * 8];
@@ -483,7 +194,7 @@ void InitDMDBuffer() {
 		uint8_t m = 1 << p;
 		for(int y = 0; y < 16; y++) {
 			for(int x = 0; x < 128; x++) {
-				uint8_t c = x; //powf(x / 255.0f * 2.0f, 2.2f) * 255.0f;
+				uint8_t c = x;
 				uint8_t col0 = (c & m ? 1 : 0) + (c & m ? 2 : 0) + (c & m ? 4 : 0);
 				uint8_t col1 = (c & m ? 1 : 0) + (c & m ? 2 : 0) + (c & m ? 4 : 0);
 				writeBuffer[idx++] = col0 + (col1 << 3);
@@ -495,22 +206,13 @@ void InitDMDBuffer() {
 void FillDMDBuffer() {
 	uint16_t idx = 0;
 	for(uint8_t p = 0; p < 8; p++) {
-		uint8_t m = 1 << p;
 		uint16_t idx2 = 0;
 		for(uint16_t j = 0;  j < 128 * 16; j++) {
-			/*
 			uint8_t col0 = frame[idx2];
-			uint8_t px0 = (globalPalette[col0 * 3 + 0] & m ? 1 : 0) + (globalPalette[col0 * 3 + 1] & m ? 2 : 0) + (globalPalette[col0 * 3 + 2] & m ? 4 : 0);
+			uint8_t px0 = GIFInfo.codedGlobalPalette[p * 256 + col0];
 
 			uint8_t col1 = frame[idx2++ + 16 * 128];
-			uint8_t px1 = (globalPalette[col1 * 3 + 0] & m ? 1 : 0) + (globalPalette[col1 * 3 + 1] & m ? 2 : 0) + (globalPalette[col1 * 3 + 2] & m ? 4 : 0);
-			 */
-
-			uint8_t col0 = frame[idx2];
-			uint8_t px0 = codedGlobalPalette[p * 256 + col0];
-
-			uint8_t col1 = frame[idx2++ + 16 * 128];
-			uint8_t px1 = codedGlobalPalette[p * 256 + col1];
+			uint8_t px1 = GIFInfo.codedGlobalPalette[p * 256 + col1];
 
 			uint8_t v = px0 + (px1 << 5);
 			writeBuffer[idx++] = v;
@@ -529,7 +231,6 @@ void SendFrame() {
 
 
 	int prevPass = pass;
-	int prevY = y;
 
 	pass++;
 	if(pass == 8) {
@@ -643,7 +344,8 @@ int main(void)
   //LoadGif("Arcade/ARCADE_IkariWarriors.gif");
   //LoadGif("Computers/AMIGA_MonkeyIsland03.gif");
   //LoadGif("Pinball_Story/PINBALL_STORY_GOT.gif");
-  LoadGif("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
+  //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
+  LoadGIFMemory(nocard_GIF);
 
   printf2("Ended SD card\r\n");
 
@@ -669,10 +371,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
 	  uint32_t currentTick = HAL_GetTick();
-	  if(currentTick - prevFrameTick > frameTick) {
-		  frameTick = delayTime;
+
+	  if(BSP_PlatformIsDetected() == SD_NOT_PRESENT) {
+		  // display error card gif
+	  }
+	  else if(currentTick - prevFrameTick > frameTick) {
+		  frameTick = GIFInfo.delayTime;
 		  prevFrameTick = currentTick;
 		  PROFILING_START("*session name*");
 
