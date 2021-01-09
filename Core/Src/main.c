@@ -250,8 +250,7 @@ void SendFrame() {
 
 	uint16_t period = litTime > 0x1000 ? litTime : 0x1000;
 	TIM4->ARR = period-1;
-	//uint16_t litTime = (period - 0x0001) >> (7 - prevPass);
-	TIM4->CCR4 = period - (litTime-64);
+	TIM4->CCR4 = period - (litTime-1);
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
 
@@ -266,8 +265,8 @@ void SendFrame() {
     __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC2);
 
     //TIM1->PSC = 1;
-	//TIM1->ARR = 14;
-	//TIM1->CCR1 = 7;
+	//TIM1->ARR = 8;
+	//TIM1->CCR1 = 4;
 
     // TIM1->CR1 = TIM_CR1_CEN;
     __HAL_TIM_ENABLE(&htim1);
@@ -338,7 +337,7 @@ int main(void)
 
   //ScanDirectory("Arcade");
   //LoadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  //LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //LoadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
   //LoadGif("Other/OTHER_SCROLL_StarWars02.gif");
   //LoadGif("Arcade/ARCADE_Skycurser.gif");
@@ -348,7 +347,7 @@ int main(void)
   //LoadGif("Computers/AMIGA_MonkeyIsland03.gif");
   //LoadGif("Pinball_Story/PINBALL_STORY_GOT.gif");
   //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
-  //LoadGIFMemory(nocard_GIF);
+  LoadGIFMemory(nocard_GIF);
 
   printf2("Ended SD card\r\n");
 
@@ -385,6 +384,7 @@ int main(void)
 		  PROFILING_START("*session name*");
 
 		  swapBufferRequest = 1;
+		  SwapBuffer(); // XXX swaping buffer inside the interrupt reduce the frame rate??!!??
 		  while(swapBufferRequest) { } // wait for swap
 		  PROFILING_EVENT("SwapBuffer");
 
