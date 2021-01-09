@@ -93,14 +93,14 @@ void ScanDirectory(char *path) {
 	FILINFO finfo;
 
 	if(f_opendir(&dir, path) != FR_OK) {
-		SendUART("Failed to open dir\r\n");
+		printf2("Failed to open dir\r\n");
 		return;
 	}
 
 	finfo.fname[0] = 0;
 	while(1) {
 	  if(f_readdir(&dir, &finfo) != FR_OK) {
-		  SendUART("Failed to read dir\r\n");
+		  printf2("Failed to read dir\r\n");
 		  break;
 	  }
 
@@ -108,12 +108,86 @@ void ScanDirectory(char *path) {
 		  break;
 
 	  if(finfo.fattrib & AM_DIR)
-		  sprintf(strBuffer, "%s/%s <dir>\r\n", path, finfo.fname);
+		  printf2("%s/%s <dir>\r\n", path, finfo.fname);
 	  else
-		  sprintf(strBuffer, "%s/%s %ld\r\n", path, finfo.fname, finfo.fsize);
-
-	  SendUART(strBuffer);
+		  printf2("%s/%s %ld\r\n", path, finfo.fname, finfo.fsize);
 	}
+	f_closedir(&dir);
+}
+
+DIR rootDir;
+DIR subDir;
+void InitSDCardDirectoryEnumerator() {
+	FILINFO finfo;
+
+	if(f_opendir(&rootDir, "/") != FR_OK) {
+		printf2("Failed to open root dir!\r\n");
+		return;
+	}
+
+	// open first subDir, if any
+	while(1) {
+		if(f_readdir(&rootDir, &finfo) != FR_OK) {
+			printf2("Failed to read dir\r\n");
+			break;
+		}
+
+		if(finfo.fname[0] == 0)
+			break;
+
+		if(finfo.fattrib & AM_DIR) {
+			// open sub dir
+			if(f_opendir(&subDir, finfo.fname) != FR_OK) {
+				printf2("Failed to open sub dir!\r\n");
+				return;
+			}
+		}
+	}
+}
+
+void OpenNextGIFFile() {
+	FILINFO finfo;
+
+	// read next in subDir
+	while(1) {
+		// read next file in subDir
+		if(f_readdir(&subDir, &finfo) != FR_OK) {
+		  printf2("Failed to read dir\r\n");
+		  break;
+		}
+
+		// is it over?
+		if(finfo.fname[0] == 0) {
+
+		}
+
+	}
+}
+
+int GIFFileIdx = 0;
+char* gifNames[] = {
+		  "Computers/AMIGA_MonkeyIsland01.gif",
+		  "Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif",
+		  "Arcade/ARCADE_MortalKombat05SubZero.gif",
+		  "Other/OTHER_SCROLL_StarWars02.gif",
+		  "Arcade/ARCADE_Skycurser.gif",
+		  "Arcade/ARCADE_XaindSleena04_Shabazz.gif",
+		  "Arcade/ARCADE_Outrun01.gif",
+		  "Arcade/ARCADE_IkariWarriors.gif",
+		  "Computers/AMIGA_MonkeyIsland03.gif",
+		  "Pinball_Story/PINBALL_STORY_GOT.gif",
+		  "BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif",
+		  "BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif",
+		  "BEST_OF_TOP_30/SNES_StarFox03.gif"
+};
+
+void LoadNextGif() {
+#if 1
+	LoadGIFFile(gifNames[GIFFileIdx]);
+	GIFFileIdx++;
+#else
+	GIFInfo.streamSeekCallback(GIFInfo.gifStart);
+#endif
 }
 
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
@@ -134,6 +208,8 @@ void FileStreamSeek(FSIZE_t pos) {
 }
 
 void LoadGIFFile(const char *path) {
+	f_close(&file);
+
 	if(f_open(&file, path, FA_READ) != FR_OK) {
 		SendUART("Can't open file!);");
 		return;
@@ -142,6 +218,7 @@ void LoadGIFFile(const char *path) {
 	GIFInfo.streamReadCallback = FileStreamRead;
 	GIFInfo.streamTellCallback = FileStreamTell;
 	GIFInfo.streamSeekCallback = FileStreamSeek;
+	GIFInfo.streamEndCallback = LoadNextGif;
 
 	LoadGIF();
 }
@@ -173,6 +250,7 @@ void LoadGIFMemory(uint8_t *data) {
 	GIFInfo.streamReadCallback = MemoryStreamRead;
 	GIFInfo.streamTellCallback = MemoryStreamTell;
 	GIFInfo.streamSeekCallback = MemoryStreamSeek;
+	GIFInfo.streamEndCallback = LoadNextGif;
 
 	LoadGIF();
 }
@@ -226,7 +304,7 @@ void FillDMDBuffer() {
 volatile uint8_t y = 0;
 volatile uint8_t renderIdx = 0;
 
-void SendFrame() {
+void matrixFrame() {
 	//TIM4->CR1 &= ~TIM_CR1_CEN;
 
 	GPIOA->ODR = (GPIOA->ODR & ~(0x01E)) | (y<<1); // set row
@@ -237,7 +315,7 @@ void SendFrame() {
 	y = (renderIdx >> 3) & 0x0F;
 
 	// swap buffer if needed
-	if(swapBufferRequest && (renderIdx == 0x7F)) {
+	if(swapBufferRequest && !(renderIdx & 0x7F)) {
 		SwapBuffer();
 	}
 
@@ -250,6 +328,7 @@ void SendFrame() {
 
 	uint16_t period = litTime > 0x1000 ? litTime : 0x1000;
 	TIM4->ARR = period-1;
+	litTime *= 1.0f; // luminosity
 	TIM4->CCR4 = period - (litTime-1);
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
@@ -336,18 +415,21 @@ int main(void)
 	  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
 
   //ScanDirectory("Arcade");
-  //LoadGif("Computers/AMIGA_MonkeyIsland01.gif");
+  //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
   //LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
-  //LoadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
-  //LoadGif("Other/OTHER_SCROLL_StarWars02.gif");
-  //LoadGif("Arcade/ARCADE_Skycurser.gif");
-  //LoadGif("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
-  //LoadGif("Arcade/ARCADE_Outrun01.gif");
-  //LoadGif("Arcade/ARCADE_IkariWarriors.gif");
-  //LoadGif("Computers/AMIGA_MonkeyIsland03.gif");
-  //LoadGif("Pinball_Story/PINBALL_STORY_GOT.gif");
-  //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
-  LoadGIFMemory(nocard_GIF);
+  //LoadGIFFile("Arcade/ARCADE_MortalKombat05SubZero.gif");
+  //LoadGIFFile("Other/OTHER_SCROLL_StarWars02.gif");
+  //LoadGIFFile("Arcade/ARCADE_Skycurser.gif");
+  //LoadGIFFile("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
+  //LoadGIFFile("Arcade/ARCADE_Outrun01.gif");
+  //LoadGIFFile("Arcade/ARCADE_IkariWarriors.gif");
+  //LoadGIFFile("Computers/AMIGA_MonkeyIsland03.gif");
+  //LoadGIFFile("Pinball_Story/PINBALL_STORY_GOT.gif");
+  LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
+  //LoadGIFFile("BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif");
+  //LoadGIFFile("BEST_OF_TOP_30/SNES_StarFox03.gif");
+
+  //LoadGIFMemory(nocard_GIF);
 
   printf2("Ended SD card\r\n");
 
@@ -384,13 +466,13 @@ int main(void)
 		  PROFILING_START("*session name*");
 
 		  swapBufferRequest = 1;
-		  SwapBuffer(); // XXX swaping buffer inside the interrupt reduce the frame rate??!!??
-		  while(swapBufferRequest) { } // wait for swap
-		  PROFILING_EVENT("SwapBuffer");
 
 		  ReadGifImage();
 		  PROFILING_EVENT("ReadGifImage");
 
+		  //SwapBuffer(); // XXX swaping buffer inside the interrupt reduce the frame rate??!!??
+		  while(swapBufferRequest) { } // wait for swap
+		  PROFILING_EVENT("SwapBuffer");
 
 		  FillDMDBuffer();
 		  PROFILING_EVENT("FillDMDBuffer");

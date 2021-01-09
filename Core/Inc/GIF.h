@@ -5,9 +5,11 @@
 #include <integer.h>
 #include <ff.h>
 
-typedef int(*GIFStreamReadFunc)(void*, UINT, UINT*);
-typedef FSIZE_t(*GIFStreamTell)();
-typedef void(*GIFStreamSeek)(FSIZE_t);
+typedef int(*GIFStreamReadCallback)(void*, UINT, UINT*); // called when GIF needed to read data
+typedef FSIZE_t(*GIFStreamTellCallback)(); // called to get the position in current stream
+typedef void(*GIFStreamSeekCallback)(FSIZE_t); // called to reposition the stream
+typedef void(*GIFStreamEndCallback)(); // called when GIF animation is over (one loop
+typedef void(*GIFStreamError)(); // called when there is a read error in the stream
 
 typedef struct __attribute__((packed))
 {
@@ -18,21 +20,13 @@ typedef struct __attribute__((packed))
     uint8_t   flags;                   //  Global Color Table specification
     uint8_t   backgroundColorIndex;              //  background color
     uint8_t   ratio;                   //  default pixel aspect ratio
-} GifHeader;
+} GIFHeader;
 
 typedef struct __attribute__((packed))
 {
 	uint8_t label;
 	uint8_t blockSize;
-} GifExtensionHeader;
-
-typedef struct __attribute__((packed))
-{
-	uint8_t flags;
-	uint16_t delayTime;
-	uint8_t transparentColorIndex;
-	uint8_t terminator; // always 0
-} GifGraphicsControlExtension;
+} GIFExtensionHeader;
 
 typedef struct __attribute__((packed))
 {
@@ -41,7 +35,15 @@ typedef struct __attribute__((packed))
 	uint16_t width;        /* Width of the image in pixels */
 	uint16_t height;       /* Height of the image in pixels */
 	uint8_t flags;       /* Image and Color Table Data Information */
-} GifImageDescriptor;
+} GIFImageDescriptor;
+
+typedef struct __attribute__((packed))
+{
+	uint8_t flags;
+	uint16_t delayTime;
+	uint8_t transparentColorIndex;
+	uint8_t terminator; // always 0
+} GIFGraphicsControlExtension;
 
 struct GIFInfo {
 	FSIZE_t gifStart;
@@ -58,9 +60,11 @@ struct GIFInfo {
 	uint16_t delayTime;
 
 	// stream callback
-	GIFStreamReadFunc streamReadCallback;
-	GIFStreamTell streamTellCallback;
-	GIFStreamSeek streamSeekCallback;
+	GIFStreamReadCallback streamReadCallback;
+	GIFStreamTellCallback streamTellCallback;
+	GIFStreamSeekCallback streamSeekCallback;
+	GIFStreamEndCallback streamEndCallback;
+	GIFStreamError streamErrorCallback;
 };
 
 extern uint8_t frame[128 * 32];

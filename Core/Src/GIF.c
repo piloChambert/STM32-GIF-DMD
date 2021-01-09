@@ -45,8 +45,9 @@ int LoadImageSubData() {
 	imageSubDataBitsLeft = 8;
 
 	UINT l;
-	if(!GIFInfo.streamReadCallback(&imageSubDataSize, 1, &l))
-		return 0;
+	if(!GIFInfo.streamReadCallback(&imageSubDataSize, 1, &l)) {
+		return -1; // stream read error
+	}
 
 	if(imageSubDataSize > 0) {
 		//printf2("data size = %d\r\n", imageSubDataSize);
@@ -57,6 +58,7 @@ int LoadImageSubData() {
 	return 0; // no more data!
 }
 
+uint16_t EOI = 0;
 uint16_t GetNextCode(int codeSize) {
 	uint16_t code = 0;
 
@@ -69,7 +71,12 @@ uint16_t GetNextCode(int codeSize) {
 
 			imageSubDataIdx++;
 			if(imageSubDataIdx >= imageSubDataSize) {
-				if(!LoadImageSubData())
+				int res = LoadImageSubData();
+
+				if(res == -1)
+					return EOI; // error handling, return EOI
+
+				if(res == 0)
 					break;
 			}
 
@@ -87,7 +94,7 @@ uint16_t GetNextCode(int codeSize) {
 void Decode(int mcs) {
 	int compressedSize = mcs + 1;
 	int clearCode = 1 << mcs;
-	int eoi = clearCode + 1;
+	EOI = clearCode + 1;
 
 	frameIdx = 0;
 
@@ -103,7 +110,7 @@ void Decode(int mcs) {
 		if(current == clearCode)
 			ClearDict(mcs);
 
-		else if(current == eoi)
+		else if(current == EOI)
 			return; // we're done decoding
 
 		else if(current < dictSize) {
@@ -157,7 +164,6 @@ void Decode(int mcs) {
 		if(frameIdx > 4096 || dictSize > 4096) {
 			printf2("Not Good!!\r\n");
 		}
-
 	}
 }
 
@@ -182,65 +188,66 @@ void ReadGifImage() {
 
 	while(1) {
 		uint8_t sep;
-		GIFInfo.streamReadCallback(&sep, sizeof(uint8_t), &l);
+		if(GIFInfo.streamReadCallback(&sep, sizeof(uint8_t), &l)) {
+			if(sep == 0x3b) // ended
+				GIFInfo.streamEndCallback();
 
-		if(sep == 0x3b) // rewind
-			GIFInfo.streamSeekCallback(GIFInfo.gifStart);
+			else if(sep == 0x21) {
+				GIFExtensionHeader extHeader;
+				if(GIFInfo.streamReadCallback(&extHeader, sizeof(GIFExtensionHeader), &l)) {
+					if(extHeader.label == 0xF9) {
+						GIFGraphicsControlExtension desc;
+						GIFInfo.streamReadCallback(&desc, sizeof(GIFGraphicsControlExtension), &l);
 
-		else if(sep == 0x21) {
-			GifExtensionHeader extHeader;
-			GIFInfo.streamReadCallback(&extHeader, sizeof(GifExtensionHeader), &l);
-
-			if(extHeader.label == 0xF9) {
-				GifGraphicsControlExtension desc;
-				GIFInfo.streamReadCallback(&desc, sizeof(GifGraphicsControlExtension), &l);
-
-				GIFInfo.delayTime = desc.delayTime * 10; // us
-				//printf2("delay time: %d\r\n", delayTime);
-			}
-			else if(extHeader.label == 0xFF) {
-				// Application Extension
-				GIFInfo.streamReadCallback(&extBuffer, 16, &l);
-			}
-			else if(extHeader.label == 0xFE) {
-				// Application Extension
-				GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize + 1, &l);
-			}
-			else {
-				// read remaining bytes
-				GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize, &l);
-			}
-		}
-
-		else if(sep == 0x2c) {
-			// image data
-			GifImageDescriptor desc;
-			GIFInfo.streamReadCallback(&desc, sizeof(GifImageDescriptor), &l);
-
-			GIFInfo.localPaletteColorCount = 2 << (desc.flags & 0x07);
-			GIFInfo.useLocalPalette = desc.flags & 0x80 ? 1 : 0;
-			if(GIFInfo.useLocalPalette) {
-				ReadGifPalette(GIFInfo.localPalette, GIFInfo.localPaletteColorCount);
+						GIFInfo.delayTime = desc.delayTime * 10; // us
+						//printf2("delay time: %d\r\n", delayTime);
+					}
+					else if(extHeader.label == 0xFF) {
+						// Application Extension
+						GIFInfo.streamReadCallback(&extBuffer, 16, &l);
+					}
+					else if(extHeader.label == 0xFE) {
+						// Comment Extension
+						GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize + 1, &l);
+					}
+					else {
+						// read remaining bytes
+						GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize, &l);
+					}
+				}
 			}
 
-			// decode GIF
+			else if(sep == 0x2c) {
+				// image data
+				GIFImageDescriptor desc;
+				if(GIFInfo.streamReadCallback(&desc, sizeof(GIFImageDescriptor), &l)) {
+					GIFInfo.localPaletteColorCount = 2 << (desc.flags & 0x07);
+					GIFInfo.useLocalPalette = desc.flags & 0x80 ? 1 : 0;
+					if(GIFInfo.useLocalPalette) {
+						ReadGifPalette(GIFInfo.localPalette, GIFInfo.localPaletteColorCount);
+					}
 
-			// read min code size
-			uint8_t mcs;
-			GIFInfo.streamReadCallback(&mcs, 1, &l);
-			PROFILING_EVENT("FindImage");
+					// read min code size
+					uint8_t mcs;
+					if(GIFInfo.streamReadCallback(&mcs, 1, &l)) {
+						PROFILING_EVENT("FindImage");
 
-			Decode(mcs);
-			PROFILING_EVENT("Decode");
-			break;
+						// decode GIF
+						Decode(mcs);
+						PROFILING_EVENT("Decode");
+					}
+				}
+
+				break;
+			}
 		}
 	}
 }
 
 void LoadGIF() {
-	GifHeader header;
+	GIFHeader header;
 	UINT l;
-	if(!GIFInfo.streamReadCallback(&header, sizeof(GifHeader), &l)) {
+	if(!GIFInfo.streamReadCallback(&header, sizeof(GIFHeader), &l)) {
 		SendUART("Can't read gif header!);");
 		return;
 	}
