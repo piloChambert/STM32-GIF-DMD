@@ -224,8 +224,11 @@ void TIM4_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM4_IRQn 0 */
   TIM4->CR1 &= ~TIM_CR1_CEN; // disable timer
-  TIM4->CNT = 0;
-
+  TIM4->CNT = 0; // reset counter
+  TIM4->SR &= ~TIM_IT_CC1; //
+  TIM4->SR &= ~TIM_SR_UIF; //
+  SendFrame();
+  return;
   /* USER CODE END TIM4_IRQn 0 */
   HAL_TIM_IRQHandler(&htim4);
   /* USER CODE BEGIN TIM4_IRQn 1 */

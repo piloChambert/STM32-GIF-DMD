@@ -180,12 +180,14 @@ void LoadGIFMemory(uint8_t *data) {
 uint8_t DMDBuffer[2][128 * 16 * 8];
 
 
-uint8_t *readBuffer = DMDBuffer[0];
-uint8_t *writeBuffer = DMDBuffer[1];
+volatile uint8_t *readBuffer = DMDBuffer[0];
+volatile uint8_t *writeBuffer = DMDBuffer[1];
+volatile uint8_t swapBufferRequest = 0;
 
 void SwapBuffer() {
 	readBuffer = readBuffer == DMDBuffer[0] ? DMDBuffer[1] : DMDBuffer[0];
 	writeBuffer = writeBuffer == DMDBuffer[0] ? DMDBuffer[1] : DMDBuffer[0];
+	swapBufferRequest = 0;
 }
 
 void InitDMDBuffer() {
@@ -220,51 +222,52 @@ void FillDMDBuffer() {
 	}
 }
 
-volatile uint8_t pass = 0;
+//volatile uint8_t pass = 0;
 volatile uint8_t y = 0;
+volatile uint8_t renderIdx = 0;
 
 void SendFrame() {
-	TIM4->CR1 &= ~TIM_CR1_CEN;
+	//TIM4->CR1 &= ~TIM_CR1_CEN;
 
 	GPIOA->ODR = (GPIOA->ODR & ~(0x01E)) | (y<<1); // set row
 	GPIOB->BSRR = GPIO_PIN_8; // strobe up
 
+	renderIdx++;
+	int prevPass = renderIdx & 0x07;
+	y = (renderIdx >> 3) & 0x0F;
 
-	int prevPass = pass;
-
-	pass++;
-	if(pass == 8) {
-		y++;
-		if(y == 16)
-			y = 0;
-		pass = 0;
+	// swap buffer if needed
+	if(swapBufferRequest && (renderIdx == 0x7F)) {
+		SwapBuffer();
 	}
 
-	TIM4->PSC = 0;
-	uint16_t period = 0x1FFF;
-	TIM4->ARR = period;
-	uint16_t litTime = (period - 0x0040) >> (7 - prevPass);
-	TIM4->CCR4 = period - (litTime >> 0);
+	// -------------------------------------
+	// Setup TIM4 pwm for light intensity
+	//TIM4->PSC = 0;
+	TIM4->CNT = 0; // reset counter
+
+	uint16_t litTime = 0x8000 >> (7 - prevPass);
+
+	uint16_t period = litTime > 0x1000 ? litTime : 0x1000;
+	TIM4->ARR = period-1;
+	//uint16_t litTime = (period - 0x0001) >> (7 - prevPass);
+	TIM4->CCR4 = period - (litTime-64);
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
-	TIM4->CNT = 0; // reset counter
+
 
 	TIM4->CR1 |= TIM_CR1_CEN;
 
+	// --------------------------------------
 	// send data with DMA
-	// DMA2_Stream1->NDTR = 128;
-	// DMA2_Stream1->M0AR = (uint32_t)&readBuffer[ y * 128 + prevPass * 128 * 16];
-	// DMA2_Stream1->PAR = (uint32_t)&GPIOB->ODR;
-	// DMA2->LIFCR = 0b111101;
-	// DMA2_Stream1->CR |= DMA_SxCR_EN; // enable channel
     HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC2],(uint32_t)&readBuffer[(y + prevPass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
 
     // TIM1->DIER = TIM_DMA_CC1;
     __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC2);
 
-    TIM1->PSC = 3;
-	TIM1->ARR = 7;
-	TIM1->CCR1 = 4;
+    //TIM1->PSC = 1;
+	//TIM1->ARR = 14;
+	//TIM1->CCR1 = 7;
 
     // TIM1->CR1 = TIM_CR1_CEN;
     __HAL_TIM_ENABLE(&htim1);
@@ -335,7 +338,7 @@ int main(void)
 
   //ScanDirectory("Arcade");
   //LoadGif("Computers/AMIGA_MonkeyIsland01.gif");
-  //LoadGif("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
+  LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
   //LoadGif("Arcade/ARCADE_MortalKombat05SubZero.gif");
   //LoadGif("Other/OTHER_SCROLL_StarWars02.gif");
   //LoadGif("Arcade/ARCADE_Skycurser.gif");
@@ -345,7 +348,7 @@ int main(void)
   //LoadGif("Computers/AMIGA_MonkeyIsland03.gif");
   //LoadGif("Pinball_Story/PINBALL_STORY_GOT.gif");
   //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
-  LoadGIFMemory(nocard_GIF);
+  //LoadGIFMemory(nocard_GIF);
 
   printf2("Ended SD card\r\n");
 
@@ -381,7 +384,8 @@ int main(void)
 		  prevFrameTick = currentTick;
 		  PROFILING_START("*session name*");
 
-		  SwapBuffer();
+		  swapBufferRequest = 1;
+		  while(swapBufferRequest) { } // wait for swap
 		  PROFILING_EVENT("SwapBuffer");
 
 		  ReadGifImage();

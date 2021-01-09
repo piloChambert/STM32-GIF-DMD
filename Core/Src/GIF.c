@@ -69,7 +69,8 @@ uint16_t GetNextCode(int codeSize) {
 
 			imageSubDataIdx++;
 			if(imageSubDataIdx >= imageSubDataSize) {
-				LoadImageSubData();
+				if(!LoadImageSubData())
+					break;
 			}
 
 			imageSubDataBitsLeft = 8;
@@ -152,6 +153,11 @@ void Decode(int mcs) {
 		}
 
 		last = current;
+
+		if(frameIdx > 4096 || dictSize > 4096) {
+			printf2("Not Good!!\r\n");
+		}
+
 	}
 }
 
