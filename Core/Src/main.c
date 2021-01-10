@@ -118,69 +118,55 @@ DIR rootDir;
 DIR subDir;
 FATFS fs;
 FIL file;
-void InitSDCardDirectoryEnumerator() {
+char subDirName[255];
+
+// return next gif file or 0
+int NextGIFFileInSubDir(char *gifFilename) {
 	FILINFO finfo;
 
-	if(f_opendir(&rootDir, "/") != FR_OK) {
-		printf2("Failed to open root dir!\r\n");
-		return;
+	while(1) {
+		if(f_readdir(&subDir, &finfo) != FR_OK) {
+			printf2("Failed to read sub dir!\r\n");
+			return 0;
+		}
+
+		if(finfo.fname[0] == 0) // no more file
+			return 0;
+
+		if(!(finfo.fattrib & AM_DIR)) {
+			// is it a gif file?
+			int l = strlen(finfo.fname);
+			if(!strcasecmp(&finfo.fname[l - 4], ".gif")) {
+				sprintf(gifFilename, "%s/%s", subDirName, finfo.fname);
+				return 1;
+			}
+		}
 	}
 
-	// open first subDir, if any
-	while(1) {
+	return 0;
+}
+
+int NextGIFFile(char *gifFilename) {
+	FILINFO finfo;
+
+	while(NextGIFFileInSubDir(gifFilename) == 0) {
+		f_closedir(&subDir);
+
+		// go to next subdir
 		if(f_readdir(&rootDir, &finfo) != FR_OK) {
 			printf2("Failed to read dir\r\n");
 			break;
 		}
 
-		if(finfo.fname[0] == 0)
-			break;
+		if(finfo.fname[0] == 0) // no more file
+			f_rewinddir(&rootDir); // rewind
 
-		if(finfo.fattrib & AM_DIR) {
-			// open sub dir
-			if(f_opendir(&subDir, finfo.fname) != FR_OK) {
-				printf2("Failed to open sub dir!\r\n");
-				return;
-			}
+		else if(finfo.fattrib & AM_DIR) {
+			f_opendir(&subDir, finfo.fname);
+			strcpy(subDirName, finfo.fname);
 		}
 	}
 }
-
-void OpenNextGIFFile() {
-	FILINFO finfo;
-
-	// read next in subDir
-	while(1) {
-		// read next file in subDir
-		if(f_readdir(&subDir, &finfo) != FR_OK) {
-		  printf2("Failed to read dir\r\n");
-		  break;
-		}
-
-		// is it over?
-		if(finfo.fname[0] == 0) {
-
-		}
-
-	}
-}
-
-int GIFFileIdx = 0;
-char* gifNames[] = {
-		  "Computers/AMIGA_MonkeyIsland01.gif",
-		  "Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif",
-		  "Arcade/ARCADE_MortalKombat05SubZero.gif",
-		  "Other/OTHER_SCROLL_StarWars02.gif",
-		  "Arcade/ARCADE_Skycurser.gif",
-		  "Arcade/ARCADE_XaindSleena04_Shabazz.gif",
-		  "Arcade/ARCADE_Outrun01.gif",
-		  "Arcade/ARCADE_IkariWarriors.gif",
-		  "Computers/AMIGA_MonkeyIsland03.gif",
-		  "Pinball_Story/PINBALL_STORY_GOT.gif",
-		  "BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif",
-		  "BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif",
-		  "BEST_OF_TOP_30/SNES_StarFox03.gif"
-};
 
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
 	if(f_read(&file, buff, btr, l) != FR_OK)
@@ -216,13 +202,11 @@ void LoadGIFFile(const char *path) {
 	LoadGIF();
 }
 
+char GIFFilename[512];
 void LoadNextGif() {
 #if 1
-	LoadGIFFile(gifNames[GIFFileIdx]);
-	GIFFileIdx++;
-
-	if(GIFFileIdx > 12)
-		GIFFileIdx = 0;
+	NextGIFFile(GIFFilename);
+	LoadGIFFile(GIFFilename);
 #else
 	GIFInfo.streamSeekCallback(GIFInfo.gifStart);
 #endif
@@ -309,6 +293,11 @@ int main(void)
   else
 	  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
 
+  // open rootdir
+  if(f_opendir(&rootDir, "/") != FR_OK) {
+	  printf2("Failed to open root dir!\r\n");
+  }
+
   //ScanDirectory("Arcade");
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
   //LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
@@ -320,11 +309,12 @@ int main(void)
   //LoadGIFFile("Arcade/ARCADE_IkariWarriors.gif");
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland03.gif");
   //LoadGIFFile("Pinball_Story/PINBALL_STORY_GOT.gif");
-  LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
+  //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
   //LoadGIFFile("BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif");
   //LoadGIFFile("BEST_OF_TOP_30/SNES_StarFox03.gif");
-
   //LoadGIFMemory(nocard_GIF);
+  //LoadGIFFile("Arcade/ARCADE_AbCop.gif");
+  LoadNextGif();
 
   printf2("Ended SD card\r\n");
 

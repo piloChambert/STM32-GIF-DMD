@@ -201,7 +201,16 @@ void ReadGifImage() {
 					}
 					else if(extHeader.label == 0xFF) {
 						// Application Extension
-						GIFInfo.streamReadCallback(&extBuffer, 16, &l);
+						// read app name and version
+						GIFInfo.streamReadCallback(&extBuffer, 3, &l);
+
+						// now read every data sub block
+						uint8_t subBlockSize;
+						GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+						while(subBlockSize > 0) {
+							GIFInfo.streamReadCallback(&extBuffer, subBlockSize, &l);
+							GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+						}
 					}
 					else if(extHeader.label == 0xFE) {
 						// Comment Extension
