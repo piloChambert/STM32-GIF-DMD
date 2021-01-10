@@ -18,9 +18,6 @@ void CodePalette(uint8_t *palette, int colorCount) {
 	}
 }
 
-int frameIdx = 0;
-uint8_t frame[128 * 32];
-
 struct {
 	uint16_t prev;
 	uint8_t k;
@@ -96,7 +93,7 @@ void Decode(int mcs) {
 	int clearCode = 1 << mcs;
 	EOI = clearCode + 1;
 
-	frameIdx = 0;
+	GIFInfo.frameWriteIndex = 0;
 
 	LoadImageSubData(); // load first data chunk
 
@@ -118,11 +115,11 @@ void Decode(int mcs) {
 			int l = current > colorCount ? dict[current].l : 1;
 			uint16_t k = current;
 			for(int i = l; i > 1; i--) {
-				frame[frameIdx + i-1] = dict[k].k;
+				GIFInfo.frame[GIFInfo.frameWriteIndex + i-1] = dict[k].k;
 				k = dict[k].prev;
 			}
-			frame[frameIdx] = k;
-			frameIdx += l;
+			GIFInfo.frame[GIFInfo.frameWriteIndex] = k;
+			GIFInfo.frameWriteIndex += l;
 
 			// add new code
 			if(last != clearCode) {
@@ -141,12 +138,12 @@ void Decode(int mcs) {
 			int l = last > colorCount ? dict[last].l : 1;
 			uint16_t k = last;
 			for(int i = l; i > 1; i--) {
-				frame[frameIdx + i-1] = dict[k].k;
+				GIFInfo.frame[GIFInfo.frameWriteIndex + i-1] = dict[k].k;
 				k = dict[k].prev;
 			}
-			frame[frameIdx] = k;
-			frame[frameIdx + l] = k;
-			frameIdx += l + 1;
+			GIFInfo.frame[GIFInfo.frameWriteIndex] = k;
+			GIFInfo.frame[GIFInfo.frameWriteIndex + l] = k;
+			GIFInfo.frameWriteIndex += l + 1;
 
 			// add new code
 			dict[dictSize].prev = last;
@@ -161,7 +158,7 @@ void Decode(int mcs) {
 
 		last = current;
 
-		if(frameIdx > 4096 || dictSize > 4096) {
+		if(GIFInfo.frameWriteIndex > 4096 || dictSize > 4096) {
 			printf2("Not Good!!\r\n");
 		}
 	}

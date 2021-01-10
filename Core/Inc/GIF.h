@@ -57,6 +57,9 @@ struct GIFInfo {
 
 	uint8_t codedGlobalPalette[256 * 8];
 
+	uint8_t frame[128 * 32];
+	uint16_t frameWriteIndex;
+
 	uint16_t delayTime;
 
 	// stream callback

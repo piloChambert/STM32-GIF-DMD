@@ -42,7 +42,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-extern void matrixFrame();
+extern void DMDMatrixFrame();
 
 /* USER CODE END PV */
 
@@ -209,7 +209,7 @@ void TIM4_IRQHandler(void)
   TIM4->CNT = 0; // reset counter
   TIM4->SR &= ~TIM_IT_CC1; //
   TIM4->SR &= ~TIM_SR_UIF; //
-  matrixFrame();
+  DMDMatrixFrame();
   return;
   /* USER CODE END TIM4_IRQn 0 */
   HAL_TIM_IRQHandler(&htim4);
