@@ -202,7 +202,7 @@ void ReadGifImage() {
 					else if(extHeader.label == 0xFF) {
 						// Application Extension
 						// read app name and version
-						GIFInfo.streamReadCallback(&extBuffer, 3, &l);
+						GIFInfo.streamReadCallback(&extBuffer, 11, &l);
 
 						// now read every data sub block
 						uint8_t subBlockSize;

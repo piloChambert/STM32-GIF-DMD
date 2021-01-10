@@ -313,7 +313,7 @@ int main(void)
   //LoadGIFFile("BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif");
   //LoadGIFFile("BEST_OF_TOP_30/SNES_StarFox03.gif");
   //LoadGIFMemory(nocard_GIF);
-  //LoadGIFFile("Arcade/ARCADE_AbCop.gif");
+  //LoadGIFFile("Arcade/ARCADE_1Player.gif");
   LoadNextGif();
 
   printf2("Ended SD card\r\n");
