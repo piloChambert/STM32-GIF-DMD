@@ -185,10 +185,10 @@ void InitSDCard() {
 
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
 	if(f_read(&file, buff, btr, l) != FR_OK)
-		return 0;
+		return GIF_STREAM_ERROR;
 
 	// else
-	return 1;
+	return GIF_NO_ERROR;
 }
 
 FSIZE_t FileStreamTell() {
@@ -235,7 +235,7 @@ int MemoryStreamRead(void* buff, UINT btr,	UINT *l) {
 
 	memoryReadStreamPointer += btr;
 
-	return 1;
+	return GIF_NO_ERROR;
 }
 
 FSIZE_t MemoryStreamTell() {
@@ -338,6 +338,7 @@ int main(void)
 
 	  if(BSP_PlatformIsDetected() == SD_NOT_PRESENT) {
 		  // display error card gif
+		  printf2("Put a card!!!");
 	  }
 	  else if(currentTick - prevFrameTick > frameTick) {
 		  frameTick = GIFInfo.delayTime;

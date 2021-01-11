@@ -11,6 +11,12 @@ typedef void(*GIFStreamSeekCallback)(FSIZE_t); // called to reposition the strea
 typedef void(*GIFStreamEndCallback)(); // called when GIF animation is over (one loop
 typedef void(*GIFStreamError)(); // called when there is a read error in the stream
 
+typedef enum {
+	GIF_NO_ERROR = 0,
+	GIF_STREAM_ERROR, // steam read error
+	GIF_DECODE_OVERFLOW
+} GIFError;
+
 typedef struct __attribute__((packed))
 {
     uint32_t  signatureHi;             //  "GIF8"
@@ -83,18 +89,10 @@ extern uint8_t frame[128 * 32];
 
 extern struct GIFInfo GIFInfo;
 
-// Convert sRGB color to RGB
-extern uint8_t sRGB2RGB(uint8_t v);
-
-// encode palette to GIFInfo.codedGlobalPalette
-extern void CodePalette(uint8_t *palette, int colorCount);
-
-extern void ReadGifPalette(uint8_t *palette, int colorCount);
-
 // read a gif image from current stream
-extern void ReadGifImage();
+extern GIFError ReadGifImage();
 
 // start GIF reading
-extern void LoadGIF();
+extern GIFError LoadGIF();
 
 #endif

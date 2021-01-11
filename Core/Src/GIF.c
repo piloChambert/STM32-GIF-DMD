@@ -1,6 +1,7 @@
 #include "Gif.h"
 #include "profiling.h"
 #include <math.h>
+#include <string.h>
 
 struct GIFInfo GIFInfo;
 
@@ -36,45 +37,42 @@ uint16_t imageSubDataSize = 0;
 int imageSubDataIdx = 0;
 int imageSubDataBitsLeft = 8;
 
-int LoadImageSubData() {
+GIFError LoadImageSubData() {
 	imageSubDataSize = 0;
 	imageSubDataIdx = 0;
 	imageSubDataBitsLeft = 8;
 
 	UINT l;
-	if(!GIFInfo.streamReadCallback(&imageSubDataSize, 1, &l)) {
-		return -1; // stream read error
-	}
+	GIFError err = GIFInfo.streamReadCallback(&imageSubDataSize, 1, &l);
+	if(err != GIF_NO_ERROR)
+		return err; // stream read error
 
 	if(imageSubDataSize > 0) {
 		//printf2("data size = %d\r\n", imageSubDataSize);
 		GIFInfo.streamReadCallback(imageSubData, imageSubDataSize, &l);
-		return 1;
 	}
 
-	return 0; // no more data!
+	return GIF_NO_ERROR;
 }
 
 uint16_t EOI = 0;
-uint16_t GetNextCode(int codeSize) {
-	uint16_t code = 0;
-
+GIFError GetNextCode(int codeSize, uint16_t *code) {
+	*code = 0;
 	int bitCount = 0;
 	while(bitCount < codeSize) {
-		code += (imageSubData[imageSubDataIdx] >> (8 - imageSubDataBitsLeft)) << bitCount;
+		*code += (imageSubData[imageSubDataIdx] >> (8 - imageSubDataBitsLeft)) << bitCount;
 
 		if(imageSubDataBitsLeft < codeSize - bitCount) {
 			bitCount += imageSubDataBitsLeft;
 
 			imageSubDataIdx++;
 			if(imageSubDataIdx >= imageSubDataSize) {
-				int res = LoadImageSubData();
+				GIFError err = LoadImageSubData();
+				if(err != GIF_NO_ERROR)
+					return err; // propagate error
 
-				if(res == -1)
-					return EOI; // error handling, return EOI
-
-				if(res == 0)
-					break;
+				if(imageSubDataSize == 0)
+					break; // no more data
 			}
 
 			imageSubDataBitsLeft = 8;
@@ -85,30 +83,36 @@ uint16_t GetNextCode(int codeSize) {
 		}
 	}
 
-	return code & ((1 << codeSize) - 1);
+	*code = *code & ((1 << codeSize) - 1);
+	return GIF_NO_ERROR;
 }
 
-void Decode(int mcs) {
+GIFError Decode(int mcs) {
 	int compressedSize = mcs + 1;
 	int clearCode = 1 << mcs;
 	EOI = clearCode + 1;
 
 	GIFInfo.frameWriteIndex = 0;
 
-	LoadImageSubData(); // load first data chunk
+	GIFError err;
+	err = LoadImageSubData(); // load first data chunk
+	if(err != GIF_NO_ERROR)
+		return err;
 
 	uint16_t current = 0;
 	uint16_t last = 0;
 
 	while(1) { // XXX warning!!!
 		// get current code
-		current = GetNextCode(compressedSize);
+		err = GetNextCode(compressedSize, &current);
+		if(err != GIF_NO_ERROR)
+			return err;
 
 		if(current == clearCode)
 			ClearDict(mcs);
 
 		else if(current == EOI)
-			return; // we're done decoding
+			return GIF_NO_ERROR; // we're done decoding
 
 		else if(current < dictSize) {
 			// output
@@ -159,17 +163,19 @@ void Decode(int mcs) {
 		last = current;
 
 		if(GIFInfo.frameWriteIndex > 4096 || dictSize > 4096) {
-			printf2("Not Good!!\r\n");
+			return GIF_DECODE_OVERFLOW; // we should never be here
 		}
 	}
+
+	return GIF_NO_ERROR;
 }
 
 
-void ReadGifPalette(uint8_t *palette, int colorCount) {
+GIFError ReadGifPalette(uint8_t *palette, int colorCount) {
 	UINT l;
-	if(!GIFInfo.streamReadCallback(palette, sizeof(uint8_t) * 3 * colorCount, &l)) {
-		return;
-	}
+	GIFError err = GIFInfo.streamReadCallback(palette, sizeof(uint8_t) * 3 * colorCount, &l);
+	if(err != GIF_NO_ERROR)
+		return err;
 
 	// gamma correction ???
 	for(int i = 0; i < colorCount * 3; i++) {
@@ -177,114 +183,153 @@ void ReadGifPalette(uint8_t *palette, int colorCount) {
 	}
 
 	CodePalette(palette, colorCount);
+
+	return GIF_NO_ERROR;
 }
 
 uint8_t extBuffer[256];
 uint16_t frameIdx = 0;
-void ReadGifImage() {
+GIFError ReadGifImage() {
 	UINT l;
 
 	while(1) {
 		uint8_t sep;
-		if(GIFInfo.streamReadCallback(&sep, sizeof(uint8_t), &l)) {
-			if(sep == 0x3b) // ended
-				GIFInfo.streamEndCallback();
+		GIFError err = GIFInfo.streamReadCallback(&sep, sizeof(uint8_t), &l);
+		if(err != GIF_NO_ERROR)
+			return err;
 
-			else if(sep == 0x21) {
-				GIFExtensionHeader extHeader;
-				if(GIFInfo.streamReadCallback(&extHeader, sizeof(GIFExtensionHeader), &l)) {
-					if(extHeader.label == 0xF9) {
-						GIFGraphicsControlExtension desc;
-						GIFInfo.streamReadCallback(&desc, sizeof(GIFGraphicsControlExtension), &l);
+		if(sep == 0x3b) {// ended
+			GIFInfo.streamEndCallback();
+			// maybe return here?
+		}
 
-						GIFInfo.delayTime = desc.delayTime * 10; // us
-						//printf2("delay time: %d\r\n", delayTime);
-					}
-					else if(extHeader.label == 0xFF) {
-						// Application Extension
-						// read app name and version
-						GIFInfo.streamReadCallback(&extBuffer, 11, &l);
+		else if(sep == 0x21) {
+			GIFExtensionHeader extHeader;
+			err = GIFInfo.streamReadCallback(&extHeader, sizeof(GIFExtensionHeader), &l);
+			if(err != GIF_NO_ERROR)
+				return err;
 
-						if(strncmp(extBuffer, "NETSCAPE2.0", 11) == 0) {
-							GIFNetscapeApplicationExtension ext;
-							GIFInfo.streamReadCallback(&ext, sizeof(GIFNetscapeApplicationExtension), &l);
-							GIFInfo.repeatCount = ext.repeatCount;
-						}
-						else {
-						// read every data sub block
-							uint8_t subBlockSize;
-							GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
-							while(subBlockSize > 0) {
-								GIFInfo.streamReadCallback(&extBuffer, subBlockSize, &l);
-								GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
-							}
-						}
-					}
-					else if(extHeader.label == 0xFE) {
-						// Comment Extension
-						GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize + 1, &l);
-					}
-					else {
-						// read remaining bytes
-						GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize, &l);
+			if(extHeader.label == 0xF9) {
+				GIFGraphicsControlExtension desc;
+				err = GIFInfo.streamReadCallback(&desc, sizeof(GIFGraphicsControlExtension), &l);
+				if(err != GIF_NO_ERROR)
+					return err;
+
+				GIFInfo.delayTime = desc.delayTime * 10; // us
+				//printf2("delay time: %d\r\n", delayTime);
+			}
+			else if(extHeader.label == 0xFF) {
+				// Application Extension
+				// read app name and version
+				err = GIFInfo.streamReadCallback(&extBuffer, 11, &l);
+				if(err != GIF_NO_ERROR)
+					return err;
+
+				if(strncmp(extBuffer, "NETSCAPE2.0", 11) == 0) {
+					GIFNetscapeApplicationExtension ext;
+					err = GIFInfo.streamReadCallback(&ext, sizeof(GIFNetscapeApplicationExtension), &l);
+					if(err != GIF_NO_ERROR)
+						return err;
+
+					GIFInfo.repeatCount = ext.repeatCount;
+				}
+				else {
+					// read every data sub block
+					uint8_t subBlockSize;
+					err = GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+					if(err != GIF_NO_ERROR)
+						return err;
+
+					while(subBlockSize > 0) {
+						err = GIFInfo.streamReadCallback(&extBuffer, subBlockSize, &l);
+						if(err != GIF_NO_ERROR)
+							return err;
+
+						err = GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+						if(err != GIF_NO_ERROR)
+							return err;
 					}
 				}
 			}
-
-			else if(sep == 0x2c) {
-				// image data
-				GIFImageDescriptor desc;
-				if(GIFInfo.streamReadCallback(&desc, sizeof(GIFImageDescriptor), &l)) {
-					GIFInfo.localPaletteColorCount = 2 << (desc.flags & 0x07);
-					GIFInfo.useLocalPalette = desc.flags & 0x80 ? 1 : 0;
-					if(GIFInfo.useLocalPalette) {
-						ReadGifPalette(GIFInfo.localPalette, GIFInfo.localPaletteColorCount);
-					}
-
-					// read min code size
-					uint8_t mcs;
-					if(GIFInfo.streamReadCallback(&mcs, 1, &l)) {
-						PROFILING_EVENT("FindImage");
-
-						// decode GIF
-						Decode(mcs);
-						PROFILING_EVENT("Decode");
-						frameIdx++;
-					}
-				}
-
-				break;
+			else if(extHeader.label == 0xFE) {
+				// Comment Extension
+				err = GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize + 1, &l);
+				if(err != GIF_NO_ERROR)
+					return err;
+			}
+			else {
+				// read remaining bytes
+				err = GIFInfo.streamReadCallback(&extBuffer, extHeader.blockSize, &l);
+				if(err != GIF_NO_ERROR)
+					return err;
 			}
 		}
-		else
+
+		else if(sep == 0x2c) {
+			// image data
+			GIFImageDescriptor desc;
+			err = GIFInfo.streamReadCallback(&desc, sizeof(GIFImageDescriptor), &l);
+			if(err != GIF_NO_ERROR)
+				return err;
+
+			GIFInfo.localPaletteColorCount = 2 << (desc.flags & 0x07);
+			GIFInfo.useLocalPalette = desc.flags & 0x80 ? 1 : 0;
+			if(GIFInfo.useLocalPalette) {
+				err = ReadGifPalette(GIFInfo.localPalette, GIFInfo.localPaletteColorCount);
+				if(err != GIF_NO_ERROR)
+					return err;
+			}
+
+			// read min code size
+			uint8_t mcs;
+			err = GIFInfo.streamReadCallback(&mcs, 1, &l);
+			if(err != GIF_NO_ERROR)
+				return err;
+
+			PROFILING_EVENT("FindImage");
+
+			// decode GIF
+			err = Decode(mcs);
+			if(err != GIF_NO_ERROR)
+				return err;
+
+			PROFILING_EVENT("Decode");
+			frameIdx++;
+
 			break;
+		}
 	}
+
+	return GIF_NO_ERROR;
 }
 
-void LoadGIF() {
+GIFError LoadGIF() {
 	GIFHeader header;
 	UINT l;
-	if(!GIFInfo.streamReadCallback(&header, sizeof(GIFHeader), &l)) {
-		SendUART("Can't read gif header!);");
-		return;
-	}
+	GIFError err = GIFInfo.streamReadCallback(&header, sizeof(GIFHeader), &l);
+	if(err != GIF_NO_ERROR)
+		return err;
 
-	printf2("GIF resolution: %dx%d\r\n", header.width, header.height);
-	printf2("background color index: %d\r\n", header.backgroundColorIndex);
+	//printf2("GIF resolution: %dx%d\r\n", header.width, header.height);
+	//printf2("background color index: %d\r\n", header.backgroundColorIndex);
 
 	// read global palette
 	int hasColorTable = header.flags & 0x80 ? 1 : 0;
 	int colorResolution = 2 << ((header.flags & 0x70) >> 4);
 	GIFInfo.globalPaletteColorCount = 2 << (header.flags & 0x07);
 
-	printf2("Color resolution: %d\r\n", colorResolution);
-	printf2("Has global color palette: %d\r\n", hasColorTable);
-	printf2("Color count: %d\r\n", GIFInfo.globalPaletteColorCount);
+	//printf2("Color resolution: %d\r\n", colorResolution);
+	//printf2("Has global color palette: %d\r\n", hasColorTable);
+	//printf2("Color count: %d\r\n", GIFInfo.globalPaletteColorCount);
 
 	if(hasColorTable) {
-		ReadGifPalette(GIFInfo.globalPalette, GIFInfo.globalPaletteColorCount);
+		err = ReadGifPalette(GIFInfo.globalPalette, GIFInfo.globalPaletteColorCount);
+		if(err != GIF_NO_ERROR)
+			return err;
 	}
 
 	// look for image data now
 	GIFInfo.gifStart = GIFInfo.streamTellCallback();
+
+	return GIF_NO_ERROR;
 }
