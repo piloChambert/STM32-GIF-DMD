@@ -115,10 +115,10 @@ void Decode(int mcs) {
 			int l = current > colorCount ? dict[current].l : 1;
 			uint16_t k = current;
 			for(int i = l; i > 1; i--) {
-				GIFInfo.frame[GIFInfo.frameWriteIndex + i-1] = dict[k].k;
+				GIFInfo.frame[(GIFInfo.frameWriteIndex + i-1) & 0xFFF] = dict[k].k;
 				k = dict[k].prev;
 			}
-			GIFInfo.frame[GIFInfo.frameWriteIndex] = k;
+			GIFInfo.frame[GIFInfo.frameWriteIndex & 0xFFF] = k;
 			GIFInfo.frameWriteIndex += l;
 
 			// add new code
@@ -138,11 +138,11 @@ void Decode(int mcs) {
 			int l = last > colorCount ? dict[last].l : 1;
 			uint16_t k = last;
 			for(int i = l; i > 1; i--) {
-				GIFInfo.frame[GIFInfo.frameWriteIndex + i-1] = dict[k].k;
+				GIFInfo.frame[(GIFInfo.frameWriteIndex + i-1) & 0xFFF] = dict[k].k;
 				k = dict[k].prev;
 			}
-			GIFInfo.frame[GIFInfo.frameWriteIndex] = k;
-			GIFInfo.frame[GIFInfo.frameWriteIndex + l] = k;
+			GIFInfo.frame[GIFInfo.frameWriteIndex & 0xFFF] = k;
+			GIFInfo.frame[(GIFInfo.frameWriteIndex + l) & 0xFFF] = k;
 			GIFInfo.frameWriteIndex += l + 1;
 
 			// add new code
@@ -180,6 +180,7 @@ void ReadGifPalette(uint8_t *palette, int colorCount) {
 }
 
 uint8_t extBuffer[256];
+uint16_t frameIdx = 0;
 void ReadGifImage() {
 	UINT l;
 
@@ -204,12 +205,19 @@ void ReadGifImage() {
 						// read app name and version
 						GIFInfo.streamReadCallback(&extBuffer, 11, &l);
 
-						// now read every data sub block
-						uint8_t subBlockSize;
-						GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
-						while(subBlockSize > 0) {
-							GIFInfo.streamReadCallback(&extBuffer, subBlockSize, &l);
+						if(strncmp(extBuffer, "NETSCAPE2.0", 11) == 0) {
+							GIFNetscapeApplicationExtension ext;
+							GIFInfo.streamReadCallback(&ext, sizeof(GIFNetscapeApplicationExtension), &l);
+							GIFInfo.repeatCount = ext.repeatCount;
+						}
+						else {
+						// read every data sub block
+							uint8_t subBlockSize;
 							GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+							while(subBlockSize > 0) {
+								GIFInfo.streamReadCallback(&extBuffer, subBlockSize, &l);
+								GIFInfo.streamReadCallback(&subBlockSize, 1, &l);
+							}
 						}
 					}
 					else if(extHeader.label == 0xFE) {
@@ -241,12 +249,15 @@ void ReadGifImage() {
 						// decode GIF
 						Decode(mcs);
 						PROFILING_EVENT("Decode");
+						frameIdx++;
 					}
 				}
 
 				break;
 			}
 		}
+		else
+			break;
 	}
 }
 

@@ -155,17 +155,32 @@ int NextGIFFile(char *gifFilename) {
 		// go to next subdir
 		if(f_readdir(&rootDir, &finfo) != FR_OK) {
 			printf2("Failed to read dir\r\n");
-			break;
+			return 1;
 		}
 
 		if(finfo.fname[0] == 0) // no more file
 			f_rewinddir(&rootDir); // rewind
 
-		else if(finfo.fattrib & AM_DIR) {
+		else if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') { // don't load hidden directory
 			f_opendir(&subDir, finfo.fname);
 			strcpy(subDirName, finfo.fname);
 		}
 	}
+
+	return 0;
+}
+
+// mount file system and open root dir
+void InitSDCard() {
+	  if(f_mount(&fs, "", 0) != FR_OK)
+		  printf2("Error (sdcard): can't mount sdcard\r\n");
+	  else
+		  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
+
+	  // open rootdir
+	  if(f_opendir(&rootDir, "/") != FR_OK) {
+		  printf2("Failed to open root dir!\r\n");
+	  }
 }
 
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
@@ -287,16 +302,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   HAL_Delay(500);
-  printf2("Start:\r\n");
-  if(f_mount(&fs, "", 0) != FR_OK)
-	  printf2("Error (sdcard): can't mount sdcard\r\n");
-  else
-	  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
-
-  // open rootdir
-  if(f_opendir(&rootDir, "/") != FR_OK) {
-	  printf2("Failed to open root dir!\r\n");
-  }
+  InitSDCard();
 
   //ScanDirectory("Arcade");
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
@@ -313,16 +319,13 @@ int main(void)
   //LoadGIFFile("BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif");
   //LoadGIFFile("BEST_OF_TOP_30/SNES_StarFox03.gif");
   //LoadGIFMemory(nocard_GIF);
-  //LoadGIFFile("Arcade/ARCADE_1Player.gif");
+  //LoadGIFFile("Arcade/ARCADE_Bagman_01_RattenJager.gif");
   LoadNextGif();
 
-  printf2("Ended SD card\r\n");
+  //LoadGIFFile("Arcade/ARCADE_1943.gif");
 
-  ReadGifImage();
-  EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
-  SwapDMDBuffers();
   uint32_t prevFrameTick = HAL_GetTick();
-  uint32_t frameTick = 0; // display first frame now!
+  uint32_t frameTick = 0;
 
   DMDInit();
 
@@ -354,8 +357,6 @@ int main(void)
 		  PROFILING_EVENT("FillDMDBuffer");
 		  PROFILING_STOP();
 	  }
-
-	//SendUART("Oh!\r\n");
   }
   /* USER CODE END 3 */
 }

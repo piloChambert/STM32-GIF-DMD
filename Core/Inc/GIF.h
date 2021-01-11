@@ -45,6 +45,14 @@ typedef struct __attribute__((packed))
 	uint8_t terminator; // always 0
 } GIFGraphicsControlExtension;
 
+typedef struct __attribute__((packed))
+{
+	uint8_t size;
+	uint8_t pad;
+	uint16_t repeatCount;
+	uint8_t terminator;
+} GIFNetscapeApplicationExtension;
+
 struct GIFInfo {
 	FSIZE_t gifStart;
 
@@ -61,6 +69,7 @@ struct GIFInfo {
 	uint16_t frameWriteIndex;
 
 	uint16_t delayTime;
+	uint16_t repeatCount;
 
 	// stream callback
 	GIFStreamReadCallback streamReadCallback;
