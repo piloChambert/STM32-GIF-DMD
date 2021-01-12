@@ -8,13 +8,12 @@
 typedef int(*GIFStreamReadCallback)(void*, UINT, UINT*); // called when GIF needed to read data
 typedef FSIZE_t(*GIFStreamTellCallback)(); // called to get the position in current stream
 typedef void(*GIFStreamSeekCallback)(FSIZE_t); // called to reposition the stream
-typedef void(*GIFStreamEndCallback)(); // called when GIF animation is over (one loop
-typedef void(*GIFStreamError)(); // called when there is a read error in the stream
 
 typedef enum {
 	GIF_NO_ERROR = 0,
 	GIF_STREAM_ERROR, // steam read error
-	GIF_DECODE_OVERFLOW
+	GIF_DECODE_OVERFLOW,
+	GIF_STREAM_FINISHED // returned when there is no more frame to read
 } GIFError;
 
 typedef struct __attribute__((packed))
@@ -81,8 +80,6 @@ struct GIFInfo {
 	GIFStreamReadCallback streamReadCallback;
 	GIFStreamTellCallback streamTellCallback;
 	GIFStreamSeekCallback streamSeekCallback;
-	GIFStreamEndCallback streamEndCallback;
-	GIFStreamError streamErrorCallback;
 };
 
 extern uint8_t frame[128 * 32];

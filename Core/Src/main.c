@@ -21,6 +21,7 @@
 #include "main.h"
 #include "dma.h"
 #include "fatfs.h"
+#include "rtc.h"
 #include "sdio.h"
 #include "tim.h"
 #include "usb_device.h"
@@ -32,8 +33,6 @@
 #include "GIF.h"
 #include "DMD.h"
 #include "profiling.h"
-
-extern unsigned char nocard_GIF[5988UL + 1];
 
 /* USER CODE END Includes */
 
@@ -59,7 +58,8 @@ extern unsigned char nocard_GIF[5988UL + 1];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+extern unsigned char nocardGIF[5988UL + 1];
+extern unsigned char startupGIF[8182UL + 1];
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -117,7 +117,7 @@ void ScanDirectory(char *path) {
 DIR rootDir;
 DIR subDir;
 FATFS fs;
-FIL file;
+FIL GIFFile;
 char subDirName[255];
 
 // return next gif file or 0
@@ -171,20 +171,19 @@ int NextGIFFile(char *gifFilename) {
 }
 
 // mount file system and open root dir
-void InitSDCard() {
-	  if(f_mount(&fs, "", 0) != FR_OK)
-		  printf2("Error (sdcard): can't mount sdcard\r\n");
-	  else
-		  printf2("Success (sdcard): SD CARD mounted successfully\r\n");
+int InitSDCard() {
+	  if(f_mount(&fs, "", 1) != FR_OK)
+		  return 1; // XXX define error
 
 	  // open rootdir
-	  if(f_opendir(&rootDir, "/") != FR_OK) {
-		  printf2("Failed to open root dir!\r\n");
-	  }
+	  if(f_opendir(&rootDir, "/") != FR_OK)
+		  return 1; // XXX define error
+
+	  return 0;
 }
 
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
-	if(f_read(&file, buff, btr, l) != FR_OK)
+	if(f_read(&GIFFile, buff, btr, l) != FR_OK)
 		return GIF_STREAM_ERROR;
 
 	// else
@@ -192,19 +191,33 @@ int FileStreamRead(void* buff, UINT btr,	UINT *l) {
 }
 
 FSIZE_t FileStreamTell() {
-	return f_tell(&file);
+	return f_tell(&GIFFile);
 }
 
 
 void FileStreamSeek(FSIZE_t pos) {
-	f_lseek(&file, pos);
+	f_lseek(&GIFFile, pos);
 }
 
-void LoadNextGif();
-void LoadGIFFile(const char *path) {
-	f_close(&file);
+GIFError ReadNextFrame() {
+	// try to read another image
+	GIFError err = ReadGifImage();
+	if(err != GIF_NO_ERROR)
+		return err;
 
-	if(f_open(&file, path, FA_READ) != FR_OK) {
+	// wait for swap
+	while(swapBufferRequest) { }
+
+	// encode new frame
+	EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
+
+	return GIF_NO_ERROR;
+}
+
+void LoadGIFFile(const char *path) {
+	f_close(&GIFFile);
+
+	if(f_open(&GIFFile, path, FA_READ) != FR_OK) {
 		SendUART("Can't open file!);");
 		return;
 	}
@@ -212,19 +225,15 @@ void LoadGIFFile(const char *path) {
 	GIFInfo.streamReadCallback = FileStreamRead;
 	GIFInfo.streamTellCallback = FileStreamTell;
 	GIFInfo.streamSeekCallback = FileStreamSeek;
-	GIFInfo.streamEndCallback = LoadNextGif;
 
 	LoadGIF();
+	ReadNextFrame();
 }
 
 char GIFFilename[512];
-void LoadNextGif() {
-#if 1
+void LoadNextGifFile() {
 	NextGIFFile(GIFFilename);
 	LoadGIFFile(GIFFilename);
-#else
-	GIFInfo.streamSeekCallback(GIFInfo.gifStart);
-#endif
 }
 
 uint8_t *memoryStreamPointer = NULL;
@@ -254,11 +263,106 @@ void LoadGIFMemory(uint8_t *data) {
 	GIFInfo.streamReadCallback = MemoryStreamRead;
 	GIFInfo.streamTellCallback = MemoryStreamTell;
 	GIFInfo.streamSeekCallback = MemoryStreamSeek;
-	GIFInfo.streamEndCallback = LoadNextGif;
 
 	LoadGIF();
+	ReadNextFrame();
 }
 
+typedef void(*stateFunction)();
+
+void StartState();
+void CardErrorState();
+void GIFFileState();
+
+stateFunction currentState = StartState;
+uint32_t prevFrameTick = 0;
+uint32_t frameTick = 0;
+
+// swap buffer if needed, decode next frame
+// return if there's no more frame in current gif
+GIFError UpdateGIF() {
+	uint32_t currentTick = HAL_GetTick();
+	GIFError err = GIF_NO_ERROR;
+	if(currentTick - prevFrameTick > frameTick) {
+		// request swap
+		swapBufferRequest = 1;
+
+		// reset frame timer
+		frameTick = GIFInfo.delayTime;
+		prevFrameTick = currentTick;
+
+		// try to read another image
+		err = ReadNextFrame();
+	}
+
+	return err;
+}
+
+void StartState() {
+	GIFError err = UpdateGIF();
+
+	if(err == GIF_STREAM_FINISHED) {
+		// if there's a car
+		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
+			// switch to file state
+			LoadNextGifFile();
+			currentState = GIFFileState;
+		}
+		else {
+			// switch to error state
+			LoadGIFMemory(nocardGIF);
+			currentState = CardErrorState;
+		}
+	}
+}
+
+void CardErrorState() {
+	GIFError err = UpdateGIF();
+
+	// loop animation if needed
+	if(err == GIF_STREAM_FINISHED) {
+		GIFInfo.streamSeekCallback(GIFInfo.gifStart);
+		ReadNextFrame();
+	}
+	else {
+		if(BSP_PlatformIsDetected() == SD_PRESENT) {
+			// try to mount the card
+			MX_FATFS_Init();
+
+			if(!InitSDCard()) {
+				// we are good!
+				LoadNextGifFile();
+				currentState = GIFFileState;
+			}
+			else {
+				// we are not good!
+				MX_FATFS_DeInit();
+			}
+		}
+	}
+}
+
+
+void GIFFileState() {
+	GIFError err = UpdateGIF();
+	if(err == GIF_STREAM_FINISHED) {
+		LoadNextGifFile();
+	}
+
+	else if(err != GIF_NO_ERROR) {
+		// switch to error state
+		LoadGIFMemory(nocardGIF);
+		currentState = CardErrorState;
+
+		f_closedir(&subDir);
+		memset(&subDir, 0, sizeof(DIR));
+		f_closedir(&rootDir);
+		memset(&rootDir, 0, sizeof(DIR));
+		f_mount(NULL, "", 0);
+		memset(&fs, 0, sizeof(FATFS));
+		MX_FATFS_DeInit();
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -295,37 +399,21 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   MX_SDIO_SD_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_Delay(500);
-  InitSDCard();
-
-  //ScanDirectory("Arcade");
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
-  //LoadGIFFile("Arcade/ARCADE_NEOGEO_MetalSlugFire05_Shabazz.gif");
-  //LoadGIFFile("Arcade/ARCADE_MortalKombat05SubZero.gif");
-  //LoadGIFFile("Other/OTHER_SCROLL_StarWars02.gif");
-  //LoadGIFFile("Arcade/ARCADE_Skycurser.gif");
-  //LoadGIFFile("Arcade/ARCADE_XaindSleena04_Shabazz.gif");
-  //LoadGIFFile("Arcade/ARCADE_Outrun01.gif");
-  //LoadGIFFile("Arcade/ARCADE_IkariWarriors.gif");
-  //LoadGIFFile("Computers/AMIGA_MonkeyIsland03.gif");
-  //LoadGIFFile("Pinball_Story/PINBALL_STORY_GOT.gif");
-  //LoadGIFFile("BEST_OF_TOP_30/ARCADE_StreetFighterAlpha2-V2_RattenJager.gif");
-  //LoadGIFFile("BEST_OF_TOP_30/GBA_ZeldaMiniCap03_RattenJager.gif");
-  //LoadGIFFile("BEST_OF_TOP_30/SNES_StarFox03.gif");
-  //LoadGIFMemory(nocard_GIF);
-  //LoadGIFFile("Arcade/ARCADE_Bagman_01_RattenJager.gif");
-  LoadNextGif();
+  //LoadNextGif();
 
-  //LoadGIFFile("Arcade/ARCADE_1943.gif");
+  LoadGIFMemory(startupGIF);
+  currentState = StartState;
 
-  uint32_t prevFrameTick = HAL_GetTick();
-  uint32_t frameTick = 0;
+  prevFrameTick = HAL_GetTick();
+  frameTick = 0;
 
   DMDInit();
 
@@ -334,30 +422,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uint32_t currentTick = HAL_GetTick();
-
-	  if(BSP_PlatformIsDetected() == SD_NOT_PRESENT) {
-		  // display error card gif
-		  printf2("Put a card!!!");
-	  }
-	  else if(currentTick - prevFrameTick > frameTick) {
-		  frameTick = GIFInfo.delayTime;
-		  prevFrameTick = currentTick;
-		  PROFILING_START("*session name*");
-
-		  swapBufferRequest = 1;
-
-		  ReadGifImage();
-		  PROFILING_EVENT("ReadGifImage");
-
-		  //SwapBuffer(); // XXX swaping buffer inside the interrupt reduce the frame rate??!!??
-		  while(swapBufferRequest) { } // wait for swap
-		  PROFILING_EVENT("SwapBuffer");
-
-		  EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
-		  PROFILING_EVENT("FillDMDBuffer");
-		  PROFILING_STOP();
-	  }
+	  currentState();
   }
   /* USER CODE END 3 */
 }
@@ -370,6 +435,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
   */
@@ -378,8 +444,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 25;
@@ -400,6 +467,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
   }

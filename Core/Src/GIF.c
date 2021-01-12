@@ -199,8 +199,7 @@ GIFError ReadGifImage() {
 			return err;
 
 		if(sep == 0x3b) {// ended
-			GIFInfo.streamEndCallback();
-			// maybe return here?
+			return GIF_STREAM_FINISHED;
 		}
 
 		else if(sep == 0x21) {
