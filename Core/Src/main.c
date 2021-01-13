@@ -60,6 +60,20 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 extern unsigned char nocardGIF[5988UL + 1];
 extern unsigned char startupGIF[8182UL + 1];
+extern unsigned char clockFont[624UL + 1];
+uint8_t clockFontInfo[] = {
+		0, 0, 16, 15, // 0
+		16, 0, 16, 15, // 1
+		32, 0, 16, 15, // 2
+		48, 0, 16, 15, // 3
+		64, 0, 16, 15, // 4
+		80, 0, 16, 15, // 5
+		96, 0, 16, 15, // 6
+		112, 0, 16, 15, // 7
+		0, 16, 16, 15, // 8
+		16, 16, 16, 15, // 9
+		32, 16, 16, 15, // :
+};
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -118,10 +132,11 @@ DIR rootDir;
 DIR subDir;
 FATFS fs;
 FIL GIFFile;
+int FileCount;
 char subDirName[255];
 
 // return next gif file or 0
-int NextGIFFileInSubDir(char *gifFilename) {
+int NextGIFFilenameInSubDir(char *gifFilename) {
 	FILINFO finfo;
 
 	while(1) {
@@ -146,10 +161,10 @@ int NextGIFFileInSubDir(char *gifFilename) {
 	return 0;
 }
 
-int NextGIFFile(char *gifFilename) {
+int NextGIFFilename(char *gifFilename) {
 	FILINFO finfo;
 
-	while(NextGIFFileInSubDir(gifFilename) == 0) {
+	while(NextGIFFilenameInSubDir(gifFilename) == 0) {
 		f_closedir(&subDir);
 
 		// go to next subdir
@@ -170,10 +185,87 @@ int NextGIFFile(char *gifFilename) {
 	return 0;
 }
 
+int GetFileCount() {
+	int count = 0;
+
+	// enumerate all subdir
+	DIR rd;
+	f_opendir(&rd, "/");
+
+	FILINFO finfo;
+	f_readdir(&rd, &finfo);
+	while(finfo.fname[0] != '\0') {
+		if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') {
+			// we are in a subDir, count file
+			DIR sd;
+			f_opendir(&sd, finfo.fname);
+
+			FILINFO finfo2;
+			f_readdir(&sd, &finfo2);
+			while(finfo2.fname[0] != '\0') {
+				if(!(finfo2.fattrib & AM_DIR))
+					count++;
+
+				f_readdir(&sd, &finfo2);
+			}
+			f_closedir(&sd);
+		}
+
+		f_readdir(&rd, &finfo);
+	}
+	f_closedir(&rd);
+
+	return count;
+}
+
+int GetFilenameForFileIndex(uint32_t idx, char *filename) {
+	int count = 0;
+
+	filename[0] = '\0';
+
+	// enumerate all subdir
+	DIR rd;
+	f_opendir(&rd, "/");
+
+	FILINFO finfo;
+	f_readdir(&rd, &finfo);
+	while(finfo.fname[0] != '\0' && filename[0] == '\0') {
+		if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') {
+			// we are in a subDir, count file
+			DIR sd;
+			f_opendir(&sd, finfo.fname);
+
+			FILINFO finfo2;
+			f_readdir(&sd, &finfo2);
+			while(finfo2.fname[0] != '\0') {
+				if(!(finfo2.fattrib & AM_DIR)) {
+					if(idx == count) {
+						sprintf(filename, "%s/%s", finfo.fname, finfo2.fname);
+						break;
+					}
+					count++;
+				}
+
+
+				f_readdir(&sd, &finfo2);
+			}
+			f_closedir(&sd);
+		}
+
+		f_readdir(&rd, &finfo);
+	}
+	f_closedir(&rd);
+
+	return 0;
+}
+
+
 // mount file system and open root dir
 int InitSDCard() {
 	  if(f_mount(&fs, "", 1) != FR_OK)
 		  return 1; // XXX define error
+
+	  FileCount = GetFileCount();
 
 	  // open rootdir
 	  if(f_opendir(&rootDir, "/") != FR_OK)
@@ -232,7 +324,8 @@ void LoadGIFFile(const char *path) {
 
 char GIFFilename[512];
 void LoadNextGifFile() {
-	NextGIFFile(GIFFilename);
+	//NextGIFFilename(GIFFilename);
+	GetFilenameForFileIndex(rand() % FileCount, GIFFilename); // random
 	LoadGIFFile(GIFFilename);
 }
 
@@ -273,10 +366,42 @@ typedef void(*stateFunction)();
 void StartState();
 void CardErrorState();
 void GIFFileState();
+void ClockState();
 
 stateFunction currentState = StartState;
 uint32_t prevFrameTick = 0;
 uint32_t frameTick = 0;
+uint32_t clockStartTick = 0;
+
+void SetState(stateFunction func) {
+	if(func == StartState) {
+		LoadGIFMemory(startupGIF);
+	}
+
+	else if(func == CardErrorState) {
+		f_closedir(&subDir);
+		memset(&subDir, 0, sizeof(DIR));
+		f_closedir(&rootDir);
+		memset(&rootDir, 0, sizeof(DIR));
+		f_mount(NULL, "", 0);
+		memset(&fs, 0, sizeof(FATFS));
+		MX_FATFS_DeInit();
+
+		LoadGIFMemory(nocardGIF);
+	}
+
+	else if(func == GIFFileState) {
+		LoadNextGifFile();
+	}
+
+	else if(func == ClockState) {
+		LoadGIFMemory(clockFont);
+		clockStartTick = HAL_GetTick();
+	}
+
+
+	currentState = func;
+}
 
 // swap buffer if needed, decode next frame
 // return if there's no more frame in current gif
@@ -305,13 +430,11 @@ void StartState() {
 		// if there's a car
 		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
 			// switch to file state
-			LoadNextGifFile();
-			currentState = GIFFileState;
+			SetState(GIFFileState);
 		}
 		else {
 			// switch to error state
-			LoadGIFMemory(nocardGIF);
-			currentState = CardErrorState;
+			SetState(CardErrorState);
 		}
 	}
 }
@@ -331,8 +454,7 @@ void CardErrorState() {
 
 			if(!InitSDCard()) {
 				// we are good!
-				LoadNextGifFile();
-				currentState = GIFFileState;
+				SetState(GIFFileState);
 			}
 			else {
 				// we are not good!
@@ -346,23 +468,58 @@ void CardErrorState() {
 void GIFFileState() {
 	GIFError err = UpdateGIF();
 	if(err == GIF_STREAM_FINISHED) {
-		LoadNextGifFile();
+		//LoadNextGifFile();
+		SetState(ClockState);
 	}
 
 	else if(err != GIF_NO_ERROR) {
 		// switch to error state
-		LoadGIFMemory(nocardGIF);
-		currentState = CardErrorState;
-
-		f_closedir(&subDir);
-		memset(&subDir, 0, sizeof(DIR));
-		f_closedir(&rootDir);
-		memset(&rootDir, 0, sizeof(DIR));
-		f_mount(NULL, "", 0);
-		memset(&fs, 0, sizeof(FATFS));
-		MX_FATFS_DeInit();
+		SetState(CardErrorState);
 	}
 }
+
+uint8_t menuFrame[128 * 32];
+void CopySubImage(uint8_t *src, uint8_t sx, uint8_t sy, uint8_t w, uint8_t h, uint8_t *dst, uint8_t dx, uint8_t dy) {
+	uint8_t _w = dx + w > 127 ? 128 - dx : w;
+	uint8_t _h = dy + h > 31 ? 32 - dy : h;
+
+	for(uint8_t y = 0; y < _h; y++)
+		for(uint8_t x = 0; x < _w; x++)
+			if(!GIFInfo.hasTransparentColor || src[sx + x + (sy + y) * 128] != GIFInfo.transparentColor)
+				dst[dx + x + (dy + y) * 128] = src[sx + x + (sy + y) * 128];
+}
+
+void PrintChar(int c, uint8_t x, uint8_t y) {
+	CopySubImage(GIFInfo.frame, clockFontInfo[c * 4], clockFontInfo[c * 4 + 1], clockFontInfo[c * 4 + 2], clockFontInfo[c * 4 + 3], menuFrame, x, y);
+}
+
+void DrawTime(uint8_t x, uint8_t y) {
+	RTC_TimeTypeDef time;
+	HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BIN);
+	RTC_DateTypeDef date;
+	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN);
+
+	PrintChar(time.Hours / 10, x + 0, y);
+	PrintChar(time.Hours % 10, x + 16, y);
+	if(time.SubSeconds & ((time.SecondFraction + 1) >> 1)) // this is half second
+		PrintChar(10, x + 28, 8);
+	PrintChar(time.Minutes / 10, x + 40, y);
+	PrintChar(time.Minutes % 10, x + 56, y);
+}
+
+void ClockState() {
+	memset(menuFrame, 0/*GIFInfo.transparentColor*/, 128 * 32);
+
+	DrawTime(30, 8);
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, GIFInfo.codedGlobalPalette);
+
+	if(HAL_GetTick() - clockStartTick > 5000)
+		SetState(GIFFileState);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -409,8 +566,7 @@ int main(void)
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
   //LoadNextGif();
 
-  LoadGIFMemory(startupGIF);
-  currentState = StartState;
+  SetState(StartState);
 
   prevFrameTick = HAL_GetTick();
   frameTick = 0;

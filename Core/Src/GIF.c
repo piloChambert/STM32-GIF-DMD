@@ -215,7 +215,8 @@ GIFError ReadGifImage() {
 					return err;
 
 				GIFInfo.delayTime = desc.delayTime * 10; // us
-				//printf2("delay time: %d\r\n", delayTime);
+				GIFInfo.hasTransparentColor = desc.flags & 0x01;
+				GIFInfo.transparentColor = desc.transparentColorIndex;
 			}
 			else if(extHeader.label == 0xFF) {
 				// Application Extension
@@ -224,7 +225,7 @@ GIFError ReadGifImage() {
 				if(err != GIF_NO_ERROR)
 					return err;
 
-				if(strncmp(extBuffer, "NETSCAPE2.0", 11) == 0) {
+				if(strncmp((char *)extBuffer, "NETSCAPE2.0", 11) == 0) {
 					GIFNetscapeApplicationExtension ext;
 					err = GIFInfo.streamReadCallback(&ext, sizeof(GIFNetscapeApplicationExtension), &l);
 					if(err != GIF_NO_ERROR)

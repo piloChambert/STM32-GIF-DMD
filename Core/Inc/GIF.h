@@ -61,6 +61,8 @@ typedef struct __attribute__((packed))
 struct GIFInfo {
 	FSIZE_t gifStart;
 
+	uint8_t hasTransparentColor;
+	uint8_t transparentColor;
 	int globalPaletteColorCount;
 	uint8_t globalPalette[256 * 3];
 
@@ -81,8 +83,6 @@ struct GIFInfo {
 	GIFStreamTellCallback streamTellCallback;
 	GIFStreamSeekCallback streamSeekCallback;
 };
-
-extern uint8_t frame[128 * 32];
 
 extern struct GIFInfo GIFInfo;
 
