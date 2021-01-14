@@ -92,4 +92,8 @@ extern GIFError ReadGifImage();
 // start GIF reading
 extern GIFError LoadGIF();
 
+// code palette for DMD
+// it does the sRGB to RGB conversion
+extern void CodePalette(uint8_t *palette, uint8_t *dst, int colorCount);
+
 #endif

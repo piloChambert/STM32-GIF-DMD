@@ -9,12 +9,16 @@ uint8_t sRGB2RGB(uint8_t v) {
 	return powf(v / 255.0f, 2.2f) * 255.0f;
 }
 
-void CodePalette(uint8_t *palette, int colorCount) {
-	for(int p = 0; p < 8; p++) {
-		uint8_t m = 1 << p;
-
-		for(int i = 0; i < colorCount; i++) {
-			GIFInfo.codedGlobalPalette[i + p * 256] = (palette[i * 3 + 0] & m ? 1 : 0) + (palette[i * 3 + 1] & m ? 2 : 0) + (palette[i * 3 + 2] & m ? 4 : 0);
+// code palette for DMD
+// it does the sRGB to RGB conversion
+void CodePalette(uint8_t *palette, uint8_t *dst, int colorCount) {
+	for(int i = 0; i < colorCount; i++) {
+		uint8_t r = sRGB2RGB(palette[i * 3 + 0]);
+		uint8_t g = sRGB2RGB(palette[i * 3 + 1]);
+		uint8_t b = sRGB2RGB(palette[i * 3 + 2]);
+		for(int p = 0; p < 8; p++) {
+			uint8_t m = 1 << p;
+			dst[i + p * 256] = (r & m ? 1 : 0) + (g & m ? 2 : 0) + (b & m ? 4 : 0);
 		}
 	}
 }
@@ -177,12 +181,7 @@ GIFError ReadGifPalette(uint8_t *palette, int colorCount) {
 	if(err != GIF_NO_ERROR)
 		return err;
 
-	// gamma correction ???
-	for(int i = 0; i < colorCount * 3; i++) {
-		palette[i] = sRGB2RGB(palette[i]);
-	}
-
-	CodePalette(palette, colorCount);
+	CodePalette(palette, GIFInfo.codedGlobalPalette, colorCount);
 
 	return GIF_NO_ERROR;
 }

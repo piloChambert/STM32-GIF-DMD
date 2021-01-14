@@ -60,20 +60,9 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 extern unsigned char nocardGIF[5988UL + 1];
 extern unsigned char startupGIF[8182UL + 1];
-extern unsigned char clockFont[624UL + 1];
-uint8_t clockFontInfo[] = {
-		0, 0, 16, 15, // 0
-		16, 0, 16, 15, // 1
-		32, 0, 16, 15, // 2
-		48, 0, 16, 15, // 3
-		64, 0, 16, 15, // 4
-		80, 0, 16, 15, // 5
-		96, 0, 16, 15, // 6
-		112, 0, 16, 15, // 7
-		0, 16, 16, 15, // 8
-		16, 16, 16, 15, // 9
-		32, 16, 16, 15, // :
-};
+
+#include "images.c"
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -367,11 +356,16 @@ void StartState();
 void CardErrorState();
 void GIFFileState();
 void ClockState();
+void MenuState();
 
 stateFunction currentState = StartState;
 uint32_t prevFrameTick = 0;
 uint32_t frameTick = 0;
 uint32_t clockStartTick = 0;
+
+// Menu drawing
+uint8_t menuFrame[128 * 32];
+uint8_t menuPalette[256 * 8];
 
 void SetState(stateFunction func) {
 	if(func == StartState) {
@@ -395,10 +389,14 @@ void SetState(stateFunction func) {
 	}
 
 	else if(func == ClockState) {
-		LoadGIFMemory(clockFont);
+		CodePalette((uint8_t *)clockFont.palette, menuPalette, 256);
 		clockStartTick = HAL_GetTick();
 	}
 
+	else if(func == MenuState) {
+		CodePalette((uint8_t *)menuFont.palette, menuPalette, 256);
+		clockStartTick = HAL_GetTick();
+	}
 
 	currentState = func;
 }
@@ -478,19 +476,19 @@ void GIFFileState() {
 	}
 }
 
-uint8_t menuFrame[128 * 32];
-void CopySubImage(uint8_t *src, uint8_t sx, uint8_t sy, uint8_t w, uint8_t h, uint8_t *dst, uint8_t dx, uint8_t dy) {
+
+void CopySubImage(const Image *src, uint8_t sx, uint8_t sy, uint8_t w, uint8_t h, uint8_t *dst, uint8_t dx, uint8_t dy) {
 	uint8_t _w = dx + w > 127 ? 128 - dx : w;
 	uint8_t _h = dy + h > 31 ? 32 - dy : h;
 
 	for(uint8_t y = 0; y < _h; y++)
 		for(uint8_t x = 0; x < _w; x++)
-			if(!GIFInfo.hasTransparentColor || src[sx + x + (sy + y) * 128] != GIFInfo.transparentColor)
-				dst[dx + x + (dy + y) * 128] = src[sx + x + (sy + y) * 128];
+			if(src->pixels[sx + x + (sy + y) * src->width] != 0) // transparent color is always 0!
+				dst[dx + x + (dy + y) * 128] = src->pixels[sx + x + (sy + y) * src->width];
 }
 
 void PrintChar(int c, uint8_t x, uint8_t y) {
-	CopySubImage(GIFInfo.frame, clockFontInfo[c * 4], clockFontInfo[c * 4 + 1], clockFontInfo[c * 4 + 2], clockFontInfo[c * 4 + 3], menuFrame, x, y);
+	CopySubImage(&clockFont, c * 16, 0, 16, 16, menuFrame, x, y);
 }
 
 void DrawTime(uint8_t x, uint8_t y) {
@@ -508,16 +506,64 @@ void DrawTime(uint8_t x, uint8_t y) {
 }
 
 void ClockState() {
-	memset(menuFrame, 0/*GIFInfo.transparentColor*/, 128 * 32);
+	// erase bg
+	memset(menuFrame, 2, 128 * 32);
 
 	DrawTime(30, 8);
 
 	swapBufferRequest = 1;
 	while(swapBufferRequest) { }
-	EncodeFrameToDMDBuffer(menuFrame, GIFInfo.codedGlobalPalette);
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 
 	if(HAL_GetTick() - clockStartTick > 5000)
 		SetState(GIFFileState);
+}
+
+int32_t CopySubImageCharacter(const Image *src, int32_t sx, int32_t sy, int32_t w, int32_t h, uint8_t *dst, int32_t dx, int32_t dy) {
+	int32_t maxX = 0;
+
+	for(int32_t y = 0; y < h; y++) {
+		for(int32_t x = 0; x < w; x++) {
+			if(src->pixels[sx + x + (sy + y) * src->width] != 0) { // transparent color is always 0!
+				if(dx + x < 128 && dy + y < 32)
+					dst[dx + x + (dy + y) * 128] = src->pixels[sx + x + (sy + y) * src->width];
+				maxX = x > maxX ? x : maxX;
+			}
+		}
+	}
+
+	return maxX + 1;
+}
+
+int32_t PrintMenuChar(int c, int32_t x, int32_t y) {
+	return CopySubImageCharacter(&menuFont, c * 9, 0, 9, 10, menuFrame, x, y);
+}
+
+void PrintMenuStr(const char *str, int32_t x, int32_t y) {
+	const char *p = str;
+	while(*p) {
+		if(*p == 32)
+			x += 9; // space
+		if(*p > 32 && *p < 127)
+			x += PrintMenuChar(*p - 33, x, y) - 1; // -1 to merge character outline together
+		p++;
+	}
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+}
+
+int y = 0;
+void MenuState() {
+	// erase bg
+	memset(menuFrame, 3, 128 * 32);
+
+	PrintMenuStr("Hello world!!", 0, y);
+
+	y++;
+	if(y > 32)
+		y = - 9;
 }
 
 /* USER CODE END 0 */

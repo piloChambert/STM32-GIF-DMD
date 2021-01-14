@@ -75,30 +75,31 @@ void DMDInit() {
 }
 
 //volatile uint8_t pass = 0;
-volatile uint8_t y = 0;
 volatile uint8_t renderIdx = 0;
+
 
 void DMDMatrixFrame() {
 	//TIM4->CR1 &= ~TIM_CR1_CEN;
+	uint8_t row = (renderIdx >> 0) & 0x0F;
 
-	GPIOA->ODR = (GPIOA->ODR & ~(0x01E)) | (y<<1); // set row
+	GPIOA->ODR = (GPIOA->ODR & ~(0x01E)) | (row<<1); // set row
 	GPIOB->BSRR = GPIO_PIN_8; // strobe up
 
 	renderIdx++;
-	int prevPass = renderIdx & 0x07;
-	y = (renderIdx >> 3) & 0x0F;
-
 	// swap buffer if needed
 	if(swapBufferRequest && !(renderIdx & 0x7F)) {
 		SwapDMDBuffers();
 	}
+
+	int pass = (renderIdx >> 4)  & 0x07;
+	row = (renderIdx >> 0) & 0x0F;
 
 	// -------------------------------------
 	// Setup TIM4 pwm for light intensity
 	//TIM4->PSC = 0;
 	TIM4->CNT = 0; // reset counter
 
-	uint16_t litTime = 0x8000 >> (7 - prevPass);
+	uint16_t litTime = 0x8000 >> (7 - pass);
 
 	uint16_t period = litTime > 0x1000 ? litTime : 0x1000;
 	TIM4->ARR = period-1;
@@ -108,11 +109,12 @@ void DMDMatrixFrame() {
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
 
 
+
 	TIM4->CR1 |= TIM_CR1_CEN;
 
 	// --------------------------------------
 	// send data with DMA
-    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC2],(uint32_t)&readBuffer[(y + prevPass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
+    HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_CC2],(uint32_t)&readBuffer[(row + pass * 16) * 128], (uint32_t)&GPIOB->ODR, 128);
 
     // TIM1->DIER = TIM_DMA_CC1;
     __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_CC2);
