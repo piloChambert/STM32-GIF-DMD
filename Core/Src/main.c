@@ -32,6 +32,7 @@
 #include <math.h>
 #include "GIF.h"
 #include "DMD.h"
+#include "FileManager.h"
 #include "profiling.h"
 
 /* USER CODE END Includes */
@@ -58,10 +59,8 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-extern unsigned char nocardGIF[5988UL + 1];
-extern unsigned char startupGIF[8182UL + 1];
-
 #include "images.c"
+#include "gifs.c"
 
 /* USER CODE END PFP */
 
@@ -90,179 +89,44 @@ void printf2(char *format, ...) {
     va_end(args);
 }
 
-void ScanDirectory(char *path) {
-	DIR dir;
-	FILINFO finfo;
+// Key stuff
+#define KEY_THRESHOLD 4
+enum keys {
+	KEY_A = 0,
+	KEY_B,
+	KEY_C,
+	KEY_D
+};
+struct {
+	GPIO_TypeDef *port;
+	uint16_t pin;
 
-	if(f_opendir(&dir, path) != FR_OK) {
-		printf2("Failed to open dir\r\n");
-		return;
-	}
+	uint8_t value;
+	uint8_t state;
+} keys[] = {
+		{GPIOA, GPIO_PIN_0, 0, 0},
+		{GPIOA, GPIO_PIN_5, 0, 0},
+		{GPIOA, GPIO_PIN_7, 0, 0},
+		{GPIOA, GPIO_PIN_9, 0, 0},
+};
 
-	finfo.fname[0] = 0;
-	while(1) {
-	  if(f_readdir(&dir, &finfo) != FR_OK) {
-		  printf2("Failed to read dir\r\n");
-		  break;
-	  }
+GIFError ReadNextFrame() {
+	// try to read another image in gif stream
+	GIFError err = ReadGifImage();
+	if(err != GIF_NO_ERROR)
+		return err;
 
-	  if(finfo.fname[0] == 0)
-		  break;
+	// wait for swap
+	while(swapBufferRequest) { }
 
-	  if(finfo.fattrib & AM_DIR)
-		  printf2("%s/%s <dir>\r\n", path, finfo.fname);
-	  else
-		  printf2("%s/%s %ld\r\n", path, finfo.fname, finfo.fsize);
-	}
-	f_closedir(&dir);
+	// encode new frame
+	EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
+
+	return GIF_NO_ERROR;
 }
 
-DIR rootDir;
-DIR subDir;
-FATFS fs;
+// File Stream
 FIL GIFFile;
-int FileCount;
-char subDirName[255];
-
-// return next gif file or 0
-int NextGIFFilenameInSubDir(char *gifFilename) {
-	FILINFO finfo;
-
-	while(1) {
-		if(f_readdir(&subDir, &finfo) != FR_OK) {
-			printf2("Failed to read sub dir!\r\n");
-			return 0;
-		}
-
-		if(finfo.fname[0] == 0) // no more file
-			return 0;
-
-		if(!(finfo.fattrib & AM_DIR)) {
-			// is it a gif file?
-			int l = strlen(finfo.fname);
-			if(!strcasecmp(&finfo.fname[l - 4], ".gif")) {
-				sprintf(gifFilename, "%s/%s", subDirName, finfo.fname);
-				return 1;
-			}
-		}
-	}
-
-	return 0;
-}
-
-int NextGIFFilename(char *gifFilename) {
-	FILINFO finfo;
-
-	while(NextGIFFilenameInSubDir(gifFilename) == 0) {
-		f_closedir(&subDir);
-
-		// go to next subdir
-		if(f_readdir(&rootDir, &finfo) != FR_OK) {
-			printf2("Failed to read dir\r\n");
-			return 1;
-		}
-
-		if(finfo.fname[0] == 0) // no more file
-			f_rewinddir(&rootDir); // rewind
-
-		else if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') { // don't load hidden directory
-			f_opendir(&subDir, finfo.fname);
-			strcpy(subDirName, finfo.fname);
-		}
-	}
-
-	return 0;
-}
-
-int GetFileCount() {
-	int count = 0;
-
-	// enumerate all subdir
-	DIR rd;
-	f_opendir(&rd, "/");
-
-	FILINFO finfo;
-	f_readdir(&rd, &finfo);
-	while(finfo.fname[0] != '\0') {
-		if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') {
-			// we are in a subDir, count file
-			DIR sd;
-			f_opendir(&sd, finfo.fname);
-
-			FILINFO finfo2;
-			f_readdir(&sd, &finfo2);
-			while(finfo2.fname[0] != '\0') {
-				if(!(finfo2.fattrib & AM_DIR))
-					count++;
-
-				f_readdir(&sd, &finfo2);
-			}
-			f_closedir(&sd);
-		}
-
-		f_readdir(&rd, &finfo);
-	}
-	f_closedir(&rd);
-
-	return count;
-}
-
-int GetFilenameForFileIndex(uint32_t idx, char *filename) {
-	int count = 0;
-
-	filename[0] = '\0';
-
-	// enumerate all subdir
-	DIR rd;
-	f_opendir(&rd, "/");
-
-	FILINFO finfo;
-	f_readdir(&rd, &finfo);
-	while(finfo.fname[0] != '\0' && filename[0] == '\0') {
-		if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') {
-			// we are in a subDir, count file
-			DIR sd;
-			f_opendir(&sd, finfo.fname);
-
-			FILINFO finfo2;
-			f_readdir(&sd, &finfo2);
-			while(finfo2.fname[0] != '\0') {
-				if(!(finfo2.fattrib & AM_DIR)) {
-					if(idx == count) {
-						sprintf(filename, "%s/%s", finfo.fname, finfo2.fname);
-						break;
-					}
-					count++;
-				}
-
-
-				f_readdir(&sd, &finfo2);
-			}
-			f_closedir(&sd);
-		}
-
-		f_readdir(&rd, &finfo);
-	}
-	f_closedir(&rd);
-
-	return 0;
-}
-
-
-// mount file system and open root dir
-int InitSDCard() {
-	  if(f_mount(&fs, "", 1) != FR_OK)
-		  return 1; // XXX define error
-
-	  FileCount = GetFileCount();
-
-	  // open rootdir
-	  if(f_opendir(&rootDir, "/") != FR_OK)
-		  return 1; // XXX define error
-
-	  return 0;
-}
-
 int FileStreamRead(void* buff, UINT btr,	UINT *l) {
 	if(f_read(&GIFFile, buff, btr, l) != FR_OK)
 		return GIF_STREAM_ERROR;
@@ -278,21 +142,6 @@ FSIZE_t FileStreamTell() {
 
 void FileStreamSeek(FSIZE_t pos) {
 	f_lseek(&GIFFile, pos);
-}
-
-GIFError ReadNextFrame() {
-	// try to read another image
-	GIFError err = ReadGifImage();
-	if(err != GIF_NO_ERROR)
-		return err;
-
-	// wait for swap
-	while(swapBufferRequest) { }
-
-	// encode new frame
-	EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
-
-	return GIF_NO_ERROR;
 }
 
 void LoadGIFFile(const char *path) {
@@ -314,12 +163,13 @@ void LoadGIFFile(const char *path) {
 char GIFFilename[512];
 void LoadNextGifFile() {
 	//NextGIFFilename(GIFFilename);
-	GetFilenameForFileIndex(rand() % FileCount, GIFFilename); // random
+	GetFilenameAtIndex(rand() % FileManager.fileCount, GIFFilename); // random
 	LoadGIFFile(GIFFilename);
 }
 
-uint8_t *memoryStreamPointer = NULL;
-uint8_t *memoryReadStreamPointer = NULL;
+// Memory Stream
+const uint8_t *memoryStreamPointer = NULL;
+const uint8_t *memoryReadStreamPointer = NULL;
 int MemoryStreamRead(void* buff, UINT btr,	UINT *l) {
 	memcpy(buff, memoryReadStreamPointer, btr);
 	*l = btr;
@@ -338,7 +188,7 @@ void MemoryStreamSeek(FSIZE_t pos) {
 	memoryReadStreamPointer = memoryStreamPointer + pos;
 }
 
-void LoadGIFMemory(uint8_t *data) {
+void LoadGIFMemory(const uint8_t *data) {
 	memoryStreamPointer = data;
 	memoryReadStreamPointer = data;
 
@@ -350,6 +200,7 @@ void LoadGIFMemory(uint8_t *data) {
 	ReadNextFrame();
 }
 
+// FSM
 typedef void(*stateFunction)();
 
 void StartState();
@@ -373,12 +224,7 @@ void SetState(stateFunction func) {
 	}
 
 	else if(func == CardErrorState) {
-		f_closedir(&subDir);
-		memset(&subDir, 0, sizeof(DIR));
-		f_closedir(&rootDir);
-		memset(&rootDir, 0, sizeof(DIR));
-		f_mount(NULL, "", 0);
-		memset(&fs, 0, sizeof(FATFS));
+		ResetSDCard();
 		MX_FATFS_DeInit();
 
 		LoadGIFMemory(nocardGIF);
@@ -428,7 +274,7 @@ void StartState() {
 		// if there's a car
 		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
 			// switch to file state
-			SetState(GIFFileState);
+			SetState(MenuState);
 		}
 		else {
 			// switch to error state
@@ -474,6 +320,10 @@ void GIFFileState() {
 		// switch to error state
 		SetState(CardErrorState);
 	}
+
+	else if((keys[KEY_C].state & 0x04)) {
+		SetState(MenuState);
+	}
 }
 
 
@@ -493,16 +343,16 @@ void PrintChar(int c, uint8_t x, uint8_t y) {
 
 void DrawTime(uint8_t x, uint8_t y) {
 	RTC_TimeTypeDef time;
-	HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BIN);
+	HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BCD);
 	RTC_DateTypeDef date;
-	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BCD);
 
-	PrintChar(time.Hours / 10, x + 0, y);
-	PrintChar(time.Hours % 10, x + 16, y);
+	PrintChar(time.Hours >> 4, x + 0, y);
+	PrintChar(time.Hours & 0x0F, x + 16, y);
 	if(time.SubSeconds & ((time.SecondFraction + 1) >> 1)) // this is half second
 		PrintChar(10, x + 28, 8);
-	PrintChar(time.Minutes / 10, x + 40, y);
-	PrintChar(time.Minutes % 10, x + 56, y);
+	PrintChar(time.Minutes >> 4, x + 40, y);
+	PrintChar(time.Minutes & 0x0F, x + 56, y);
 }
 
 void ClockState() {
@@ -517,6 +367,10 @@ void ClockState() {
 
 	if(HAL_GetTick() - clockStartTick > 5000)
 		SetState(GIFFileState);
+
+	else if((keys[KEY_C].state & 0x04)) {
+		SetState(MenuState);
+	}
 }
 
 int32_t CopySubImageCharacter(const Image *src, int32_t sx, int32_t sy, int32_t w, int32_t h, uint8_t *dst, int32_t dx, int32_t dy) {
@@ -525,7 +379,7 @@ int32_t CopySubImageCharacter(const Image *src, int32_t sx, int32_t sy, int32_t 
 	for(int32_t y = 0; y < h; y++) {
 		for(int32_t x = 0; x < w; x++) {
 			if(src->pixels[sx + x + (sy + y) * src->width] != 0) { // transparent color is always 0!
-				if(dx + x < 128 && dy + y < 32)
+				if(dx + x >= 0 && dx + x < 128 && dy + y >= 0 && dy + y < 32)
 					dst[dx + x + (dy + y) * 128] = src->pixels[sx + x + (sy + y) * src->width];
 				maxX = x > maxX ? x : maxX;
 			}
@@ -548,22 +402,42 @@ void PrintMenuStr(const char *str, int32_t x, int32_t y) {
 			x += PrintMenuChar(*p - 33, x, y) - 1; // -1 to merge character outline together
 		p++;
 	}
-
-	swapBufferRequest = 1;
-	while(swapBufferRequest) { }
-	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 }
 
 int y = 0;
+int target = 0;
 void MenuState() {
 	// erase bg
 	memset(menuFrame, 3, 128 * 32);
 
-	PrintMenuStr("Hello world!!", 0, y);
+	char dirName[255];
 
-	y++;
-	if(y > 32)
-		y = - 9;
+	int firstIdx = MAX(y - 11, 0) / 16;
+
+	for(int i = firstIdx; i < MIN(firstIdx + 3, FileManager.directoryCount); i++) {
+		GetDirectoryAtIndex(i, dirName);
+		PrintMenuStr(dirName, 8, i *  16 - y + 11);
+	}
+
+	if((keys[KEY_A].state & 0x04) && target < FileManager.directoryCount - 1) {
+		target++;
+	}
+	if((keys[KEY_B].state & 0x04) && target > 0) {
+		target--;
+	}
+	if((keys[KEY_C].state & 0x04)) {
+		SetState(ClockState);
+	}
+
+	// scroll
+	if(y < target * 16)
+		y++;
+	else if(y > target * 16)
+		y--;
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 }
 
 /* USER CODE END 0 */
@@ -584,7 +458,6 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -624,6 +497,24 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  // update keys
+	  for(int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+		  GPIO_PinState v = HAL_GPIO_ReadPin(keys[i].port, keys[i].pin);
+
+		  if(v == GPIO_PIN_SET && keys[i].value < KEY_THRESHOLD)
+			  keys[i].value++;
+		  else if(v == GPIO_PIN_RESET && keys[i].value > 0)
+			  keys[i].value--;
+
+		  if(keys[i].state == 0 && keys[i].value == KEY_THRESHOLD)
+			  keys[i].state = 1 + 2; // set to up state and set up event
+		  else if(keys[i].state == 1 && keys[i].value == 0)
+			  keys[i].state = 0 + 4; // set to down state and set down event
+		  else
+			  keys[i].state &= 0x1; // keep state bit
+	  }
+
+
 	  currentState();
   }
   /* USER CODE END 3 */
@@ -681,6 +572,10 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+int __io_putchar(int ch) {
+    ITM_SendChar(ch);
+    return ch;
+}
 /* USER CODE END 4 */
 
 /**
