@@ -90,7 +90,10 @@ void printf2(char *format, ...) {
 }
 
 // Key stuff
-#define KEY_THRESHOLD 4
+#define KEY_DEBOUNCE_THRESHOLD 4
+#define KEY_FIRST_REPEAT_TIME 500 // ms
+#define KEY_REPEAT_TIME 150 // ms
+
 enum keys {
 	KEY_A = 0,
 	KEY_B,
@@ -101,6 +104,8 @@ struct {
 	GPIO_TypeDef *port;
 	uint16_t pin;
 
+	uint32_t repeatTime; // time when switch state for repeat
+
 	uint8_t value;
 	uint8_t state;
 } keys[] = {
@@ -109,6 +114,40 @@ struct {
 		{GPIOA, GPIO_PIN_7, 0, 0},
 		{GPIOA, GPIO_PIN_9, 0, 0},
 };
+
+#define KEY_UP_EVENT 0x02
+#define KEY_DOWN_EVENT 0x04
+#define KEY_REPEAT_EVENT 0x08
+
+// switches are on pull-up GPIO, so when press pin state is GPIO_PIN_RESET
+void UpdateKeyState() {
+	uint32_t currentTime = HAL_GetTick();
+
+	for(int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+		GPIO_PinState v = HAL_GPIO_ReadPin(keys[i].port, keys[i].pin);
+
+		if(v == GPIO_PIN_RESET && keys[i].value < KEY_DEBOUNCE_THRESHOLD)
+			keys[i].value++;
+		else if(v == GPIO_PIN_SET && keys[i].value > 0)
+			keys[i].value--;
+
+		if(keys[i].state == 0 && keys[i].value == KEY_DEBOUNCE_THRESHOLD) {
+			keys[i].state = 1 + KEY_UP_EVENT; // set to up state and set up event
+			keys[i].repeatTime = currentTime + KEY_FIRST_REPEAT_TIME;
+		}
+		else if(keys[i].state == 1 && keys[i].value == 0)
+			keys[i].state = KEY_DOWN_EVENT; // set to down state and set down event
+		else {
+			// key repeat
+			if((keys[i].state & 0x01) && (currentTime > keys[i].repeatTime)) {
+				keys[i].state |= KEY_UP_EVENT + KEY_REPEAT_EVENT; // generate event
+				keys[i].repeatTime = currentTime + KEY_REPEAT_TIME; // reset time
+			}
+			else
+				keys[i].state &= 0x1; // keep state bit, reset events
+		}
+	}
+}
 
 GIFError ReadNextFrame() {
 	// try to read another image in gif stream
@@ -207,7 +246,9 @@ void StartState();
 void CardErrorState();
 void GIFFileState();
 void ClockState();
+void SetClockState();
 void MenuState();
+
 
 stateFunction currentState = StartState;
 uint32_t prevFrameTick = 0;
@@ -235,6 +276,11 @@ void SetState(stateFunction func) {
 	}
 
 	else if(func == ClockState) {
+		CodePalette((uint8_t *)clockFont.palette, menuPalette, 256);
+		clockStartTick = HAL_GetTick();
+	}
+
+	else if(func == SetClockState) {
 		CodePalette((uint8_t *)clockFont.palette, menuPalette, 256);
 		clockStartTick = HAL_GetTick();
 	}
@@ -267,6 +313,19 @@ GIFError UpdateGIF() {
 	return err;
 }
 
+#define LUMINOSITY_GAMMA 2.2f
+void UpdateLuminosity() {
+	float lum = powf(luminosityAttenuation, 1.0f / LUMINOSITY_GAMMA);
+	if(keys[KEY_A].state & KEY_UP_EVENT) {
+		lum = MIN(lum + 0.05f, 1.0f);
+		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
+	}
+	if(keys[KEY_B].state & KEY_UP_EVENT) {
+		lum = MAX(lum - 0.05f, 0.0f);
+		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
+	}
+}
+
 void StartState() {
 	GIFError err = UpdateGIF();
 
@@ -274,13 +333,15 @@ void StartState() {
 		// if there's a car
 		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
 			// switch to file state
-			SetState(MenuState);
+			SetState(ClockState);
 		}
 		else {
 			// switch to error state
 			SetState(CardErrorState);
 		}
 	}
+
+	UpdateLuminosity();
 }
 
 void CardErrorState() {
@@ -306,6 +367,8 @@ void CardErrorState() {
 			}
 		}
 	}
+
+	UpdateLuminosity();
 }
 
 
@@ -324,6 +387,8 @@ void GIFFileState() {
 	else if((keys[KEY_C].state & 0x04)) {
 		SetState(MenuState);
 	}
+
+	UpdateLuminosity();
 }
 
 
@@ -341,36 +406,102 @@ void PrintChar(int c, uint8_t x, uint8_t y) {
 	CopySubImage(&clockFont, c * 16, 0, 16, 16, menuFrame, x, y);
 }
 
-void DrawTime(uint8_t x, uint8_t y) {
+void DrawTime(uint8_t x, uint8_t y, uint8_t blink) {
 	RTC_TimeTypeDef time;
 	HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BCD);
 	RTC_DateTypeDef date;
 	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BCD);
 
-	PrintChar(time.Hours >> 4, x + 0, y);
-	PrintChar(time.Hours & 0x0F, x + 16, y);
-	if(time.SubSeconds & ((time.SecondFraction + 1) >> 1)) // this is half second
+	uint8_t h2 = time.SubSeconds & ((time.SecondFraction + 1) >> 1); // this is 1/2 second
+	uint8_t h4 = time.SubSeconds & ((time.SecondFraction + 1) >> 2); // this is 1/4 second
+
+	if(!(blink & 0x01) || h4)
+		PrintChar(time.Hours >> 4, x + 0, y);
+
+	if(!(blink & 0x01) || h4)
+		PrintChar(time.Hours & 0x0F, x + 16, y);
+
+	if(h2)
 		PrintChar(10, x + 28, 8);
-	PrintChar(time.Minutes >> 4, x + 40, y);
-	PrintChar(time.Minutes & 0x0F, x + 56, y);
+
+	if(!(blink & 0x02) || h4)
+		PrintChar(time.Minutes >> 4, x + 40, y);
+
+	if(!(blink & 0x02) || h4)
+		PrintChar(time.Minutes & 0x0F, x + 56, y);
 }
 
 void ClockState() {
 	// erase bg
 	memset(menuFrame, 2, 128 * 32);
 
-	DrawTime(30, 8);
+	DrawTime(30, 8, 0);
 
 	swapBufferRequest = 1;
 	while(swapBufferRequest) { }
 	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 
+	UpdateLuminosity();
+
 	if(HAL_GetTick() - clockStartTick > 5000)
 		SetState(GIFFileState);
 
-	else if((keys[KEY_C].state & 0x04)) {
+	else if((keys[KEY_C].state & KEY_UP_EVENT)) {
 		SetState(MenuState);
 	}
+
+}
+
+int digit = 0;
+void SetClockState() {
+	// erase bg
+	memset(menuFrame, 2, 128 * 32);
+
+	DrawTime(30, 8, 1 << digit);
+
+	if((keys[KEY_C].state & KEY_UP_EVENT)) {
+		digit++;
+		if(digit == 2)
+			digit = 0;
+	}
+
+	RTC_TimeTypeDef time;
+	HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BIN);
+	RTC_DateTypeDef date;
+	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN);
+
+	if((keys[KEY_A].state & KEY_UP_EVENT)) {
+		switch (digit){
+			case 0:
+				time.Hours = (time.Hours + 1) % 24;
+				break;
+			case 1:
+				time.Minutes = (time.Minutes + 1) % 60;
+				break;
+		}
+
+		HAL_RTC_SetTime(&hrtc, &time, RTC_FORMAT_BIN);
+		HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
+	}
+
+	if((keys[KEY_B].state & KEY_UP_EVENT)) {
+		switch (digit){
+			case 0:
+				time.Hours = (time.Hours + 24 - 1) % 24;
+				break;
+			case 1:
+				time.Minutes = (time.Minutes + 60 - 1) % 60;
+				break;
+		}
+
+		HAL_RTC_SetTime(&hrtc, &time, RTC_FORMAT_BIN);
+		HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
+	}
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+
 }
 
 int32_t CopySubImageCharacter(const Image *src, int32_t sx, int32_t sy, int32_t w, int32_t h, uint8_t *dst, int32_t dx, int32_t dy) {
@@ -419,25 +550,27 @@ void MenuState() {
 		PrintMenuStr(dirName, 8, i *  16 - y + 11);
 	}
 
-	if((keys[KEY_A].state & 0x04) && target < FileManager.directoryCount - 1) {
+	if((keys[KEY_A].state & KEY_UP_EVENT) && target < FileManager.directoryCount - 1) {
 		target++;
 	}
-	if((keys[KEY_B].state & 0x04) && target > 0) {
+	if((keys[KEY_B].state & KEY_UP_EVENT) && target > 0) {
 		target--;
 	}
-	if((keys[KEY_C].state & 0x04)) {
+
+	if((keys[KEY_C].state & KEY_UP_EVENT)) {
 		SetState(ClockState);
 	}
+	else {
+		// scroll
+		if(y < target * 16)
+			y += 4;
+		else if(y > target * 16)
+			y -= 4;
 
-	// scroll
-	if(y < target * 16)
-		y++;
-	else if(y > target * 16)
-		y--;
-
-	swapBufferRequest = 1;
-	while(swapBufferRequest) { }
-	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+		swapBufferRequest = 1;
+		while(swapBufferRequest) { }
+		EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+	}
 }
 
 /* USER CODE END 0 */
@@ -498,23 +631,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  // update keys
-	  for(int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-		  GPIO_PinState v = HAL_GPIO_ReadPin(keys[i].port, keys[i].pin);
+	  UpdateKeyState();
 
-		  if(v == GPIO_PIN_SET && keys[i].value < KEY_THRESHOLD)
-			  keys[i].value++;
-		  else if(v == GPIO_PIN_RESET && keys[i].value > 0)
-			  keys[i].value--;
-
-		  if(keys[i].state == 0 && keys[i].value == KEY_THRESHOLD)
-			  keys[i].state = 1 + 2; // set to up state and set up event
-		  else if(keys[i].state == 1 && keys[i].value == 0)
-			  keys[i].state = 0 + 4; // set to down state and set down event
-		  else
-			  keys[i].state &= 0x1; // keep state bit
-	  }
-
-
+	  // run current state
 	  currentState();
   }
   /* USER CODE END 3 */
@@ -572,10 +691,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-int __io_putchar(int ch) {
-    ITM_SendChar(ch);
-    return ch;
-}
 /* USER CODE END 4 */
 
 /**

@@ -3,10 +3,14 @@
 #include "dma.h"
 #include "tim.h"
 
+#include <math.h>
+
+volatile uint8_t swapBufferRequest = 0;
+volatile float luminosityAttenuation = 1.0f;
+
 uint8_t DMDBuffer[2][128 * 16 * 8];
 volatile uint8_t *readBuffer = DMDBuffer[0];
 volatile uint8_t *writeBuffer = DMDBuffer[1];
-volatile uint8_t swapBufferRequest = 0;
 
 void SwapDMDBuffers() {
 	readBuffer = readBuffer == DMDBuffer[0] ? DMDBuffer[1] : DMDBuffer[0];
@@ -103,7 +107,7 @@ void DMDMatrixFrame() {
 
 	uint16_t period = litTime > 0x1000 ? litTime : 0x1000;
 	TIM4->ARR = period-1;
-	litTime *= 1.0f; // luminosity
+	litTime *= luminosityAttenuation;
 	TIM4->CCR4 = period - (litTime-1);
 
 	GPIOB->BSRR = GPIO_PIN_8 << 16; // strobe down
