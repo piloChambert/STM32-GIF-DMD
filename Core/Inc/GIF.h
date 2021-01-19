@@ -13,7 +13,8 @@ typedef enum {
 	GIF_NO_ERROR = 0,
 	GIF_STREAM_ERROR, // steam read error
 	GIF_DECODE_OVERFLOW,
-	GIF_STREAM_FINISHED // returned when there is no more frame to read
+	GIF_STREAM_FINISHED, // returned when there is no more frame to read
+	GIF_NO_MORE_QUEUED_FRAME // not return by gif module, but use in main program
 } GIFError;
 
 typedef struct __attribute__((packed))
@@ -59,7 +60,7 @@ typedef struct __attribute__((packed))
 } GIFNetscapeApplicationExtension;
 
 struct GIFInfo {
-	FSIZE_t gifStart;
+	FSIZE_t gifStart; // use to loop gif
 
 	uint8_t hasTransparentColor;
 	uint8_t transparentColor;

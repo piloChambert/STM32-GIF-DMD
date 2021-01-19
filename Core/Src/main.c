@@ -149,7 +149,8 @@ void UpdateKeyState() {
 	}
 }
 
-GIFError ReadNextFrame() {
+int queuedFrame = 0;
+GIFError QueueNextGifStreamFrame() {
 	// try to read another image in gif stream
 	GIFError err = ReadGifImage();
 	if(err != GIF_NO_ERROR)
@@ -158,8 +159,9 @@ GIFError ReadNextFrame() {
 	// wait for swap
 	while(swapBufferRequest) { }
 
-	// encode new frame
+	// queue the new frame
 	EncodeFrameToDMDBuffer(GIFInfo.frame, GIFInfo.codedGlobalPalette);
+	queuedFrame = 1;
 
 	return GIF_NO_ERROR;
 }
@@ -196,7 +198,7 @@ void LoadGIFFile(const char *path) {
 	GIFInfo.streamSeekCallback = FileStreamSeek;
 
 	LoadGIF();
-	ReadNextFrame();
+	QueueNextGifStreamFrame();
 }
 
 char GIFFilename[512];
@@ -236,7 +238,7 @@ void LoadGIFMemory(const uint8_t *data) {
 	GIFInfo.streamSeekCallback = MemoryStreamSeek;
 
 	LoadGIF();
-	ReadNextFrame();
+	QueueNextGifStreamFrame();
 }
 
 // FSM
@@ -299,37 +301,78 @@ GIFError UpdateGIF() {
 	uint32_t currentTick = HAL_GetTick();
 	GIFError err = GIF_NO_ERROR;
 	if(currentTick - prevFrameTick > frameTick) {
-		// request swap
-		swapBufferRequest = 1;
+		if(queuedFrame) {
+			// request swap
+			swapBufferRequest = 1;
+			queuedFrame = 0;
 
-		// reset frame timer
-		frameTick = GIFInfo.delayTime;
-		prevFrameTick = currentTick;
+			// reset frame timer
+			frameTick = GIFInfo.delayTime;
+			prevFrameTick = currentTick;
 
-		// try to read another image
-		err = ReadNextFrame();
+			// try to read another image
+			err = QueueNextGifStreamFrame();
+		}
+		else {
+			// no more gif frame to display
+			err = GIF_NO_MORE_QUEUED_FRAME;
+		}
 	}
 
 	return err;
 }
 
 #define LUMINOSITY_GAMMA 2.2f
+uint32_t luminosityTimer = 0;
+int luminosityVisible = 0;
 void UpdateLuminosity() {
 	float lum = powf(luminosityAttenuation, 1.0f / LUMINOSITY_GAMMA);
 	if(keys[KEY_A].state & KEY_UP_EVENT) {
 		lum = MIN(lum + 0.05f, 1.0f);
 		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
+
+		luminosityTimer = HAL_GetTick();
+		luminosityVisible = 1;
 	}
 	if(keys[KEY_B].state & KEY_UP_EVENT) {
 		lum = MAX(lum - 0.05f, 0.0f);
 		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
+
+		luminosityTimer = HAL_GetTick();
+		luminosityVisible = 1;
+	}
+
+	if(luminosityVisible) {
+		if(HAL_GetTick() - luminosityTimer > 2000) {
+			luminosityVisible = 0;
+		}
+		else {
+			// draw luminosity progress bar over current frame
+			uint8_t v = lum * 100.0f;
+
+			for(uint32_t p = 0; p < 8; p++) {
+				for(uint32_t y = 12; y < 16; y++) {
+					for(uint32_t x = 13; x < 115; x++) {
+						if(y == 12 || y == 15) { // black line
+							writeBuffer[x + y * 128 + p * 128 * 16] &= ~(0XE0); // black
+						}
+						else {
+							if(x == 13 || x > 14 + v)
+								writeBuffer[x + y * 128 + p * 128 * 16] &= ~(0xE0); // black
+							else
+								writeBuffer[x + y * 128 + p * 128 * 16] |= 0xE0; // white
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
 void StartState() {
 	GIFError err = UpdateGIF();
 
-	if(err == GIF_STREAM_FINISHED) {
+	if(err == GIF_NO_MORE_QUEUED_FRAME) {
 		// if there's a car
 		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
 			// switch to file state
@@ -350,7 +393,7 @@ void CardErrorState() {
 	// loop animation if needed
 	if(err == GIF_STREAM_FINISHED) {
 		GIFInfo.streamSeekCallback(GIFInfo.gifStart);
-		ReadNextFrame();
+		QueueNextGifStreamFrame();
 	}
 	else {
 		if(BSP_PlatformIsDetected() == SD_PRESENT) {
@@ -375,7 +418,11 @@ void CardErrorState() {
 void GIFFileState() {
 	GIFError err = UpdateGIF();
 	if(err == GIF_STREAM_FINISHED) {
+		// load a new gif
 		//LoadNextGifFile();
+	}
+
+	else if(err == GIF_NO_MORE_QUEUED_FRAME) {
 		SetState(ClockState);
 	}
 
@@ -433,14 +480,13 @@ void DrawTime(uint8_t x, uint8_t y, uint8_t blink) {
 
 void ClockState() {
 	// erase bg
-	memset(menuFrame, 2, 128 * 32);
+	memset(menuFrame, 10, 128 * 32);
 
 	DrawTime(30, 8, 0);
 
 	swapBufferRequest = 1;
 	while(swapBufferRequest) { }
 	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
-
 	UpdateLuminosity();
 
 	if(HAL_GetTick() - clockStartTick > 5000)
@@ -455,7 +501,7 @@ void ClockState() {
 int digit = 0;
 void SetClockState() {
 	// erase bg
-	memset(menuFrame, 2, 128 * 32);
+	memset(menuFrame, 10, 128 * 32);
 
 	DrawTime(30, 8, 1 << digit);
 
@@ -530,42 +576,52 @@ void PrintMenuStr(const char *str, int32_t x, int32_t y) {
 		if(*p == 32)
 			x += 9; // space
 		if(*p > 32 && *p < 127)
-			x += PrintMenuChar(*p - 33, x, y) - 1; // -1 to merge character outline together
+			x += PrintMenuChar(*p - 30, x, y) - 1; // -1 to merge character outline together
 		p++;
 	}
 }
 
 int y = 0;
-int target = 0;
+int selectedDirectory = 0;
 void MenuState() {
 	// erase bg
-	memset(menuFrame, 3, 128 * 32);
+	memset(menuFrame, 0x03, 128 * 32);
 
 	char dirName[255];
 
-	int firstIdx = MAX(y - 11, 0) / 16;
+	int firstIdx = MAX(y - 11, 0) / 10;
 
-	for(int i = firstIdx; i < MIN(firstIdx + 3, FileManager.directoryCount); i++) {
+	for(int i = firstIdx; i < MIN(firstIdx + 4, FileManager.directoryCount); i++) {
 		GetDirectoryAtIndex(i, dirName);
-		PrintMenuStr(dirName, 8, i *  16 - y + 11);
+		if(i == selectedDirectory)
+			PrintMenuChar(0, 1, i * 10 - y + 11);
+
+		PrintMenuChar(FileManager.directories[i].enable ? 2 : 1, 10, i * 10 - y + 11);
+		PrintMenuStr(dirName, 19, i *  10 - y + 11);
 	}
 
-	if((keys[KEY_A].state & KEY_UP_EVENT) && target < FileManager.directoryCount - 1) {
-		target++;
+	if((keys[KEY_A].state & KEY_UP_EVENT) && selectedDirectory < FileManager.directoryCount - 1) {
+		selectedDirectory++;
 	}
-	if((keys[KEY_B].state & KEY_UP_EVENT) && target > 0) {
-		target--;
+	if((keys[KEY_B].state & KEY_UP_EVENT) && selectedDirectory > 0) {
+		selectedDirectory--;
 	}
 
-	if((keys[KEY_C].state & KEY_UP_EVENT)) {
+	if(keys[KEY_C].state & KEY_UP_EVENT) {
 		SetState(ClockState);
 	}
+
+	if(keys[KEY_D].state & KEY_UP_EVENT) {
+		FileManager.directories[selectedDirectory].enable = !FileManager.directories[selectedDirectory].enable;
+		UpdateFileCount();
+	}
+
 	else {
 		// scroll
-		if(y < target * 16)
-			y += 4;
-		else if(y > target * 16)
-			y -= 4;
+		if(y < selectedDirectory * 10)
+			y += 2;
+		else if(y > selectedDirectory * 10)
+			y -= 2;
 
 		swapBufferRequest = 1;
 		while(swapBufferRequest) { }
@@ -615,9 +671,18 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+  //HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x02);
+  uint32_t v = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
+  if(v != 0x88) {
+	  printf("OUch");
+  }
+
+
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
   //LoadNextGif();
 
+  srand(hrtc.Instance->TR);
   SetState(StartState);
 
   prevFrameTick = HAL_GetTick();

@@ -4,6 +4,9 @@
 #include <stdint.h>
 
 extern volatile uint8_t swapBufferRequest;
+extern volatile uint8_t *readBuffer;
+extern volatile uint8_t *writeBuffer;
+
 extern volatile float luminosityAttenuation;
 
 extern void DMDInit();

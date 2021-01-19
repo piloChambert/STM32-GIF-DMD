@@ -31,4 +31,6 @@ extern int GetDirectoryAtIndex(uint32_t idx, char *name);
 
 extern int NextGIFFilename(char *gifFilename);
 
+extern void UpdateFileCount();
+
 #endif

@@ -126,8 +126,6 @@ int GetFilenameAtIndex(uint32_t idx, char *filename) {
 	while(finfo.fname[0] != '\0' && filename[0] == '\0') {
 		if(finfo.fattrib & AM_DIR && finfo.fname[0] != '.') {
 			// we are in a subDir, count file
-			dirCount++;
-
 			// if it's an enabled directory
 			if(FileManager.directories[dirCount].enable) {
 				DIR sd;
@@ -154,6 +152,8 @@ int GetFilenameAtIndex(uint32_t idx, char *filename) {
 				if(f_closedir(&sd) != FR_OK)
 					return 1; // XXX error handling
 			}
+
+			dirCount++;
 		}
 
 		if(f_readdir(&rd, &finfo) != FR_OK)
