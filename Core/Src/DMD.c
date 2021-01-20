@@ -12,6 +12,11 @@ uint8_t DMDBuffer[2][128 * 16 * 8];
 volatile uint8_t *readBuffer = DMDBuffer[0];
 volatile uint8_t *writeBuffer = DMDBuffer[1];
 
+#define LUMINOSITY_GAMMA 2.2f
+void SetDMDLuminosity(uint8_t lum) {
+	luminosityAttenuation = powf(lum * 0.01f, LUMINOSITY_GAMMA);
+}
+
 void SwapDMDBuffers() {
 	readBuffer = readBuffer == DMDBuffer[0] ? DMDBuffer[1] : DMDBuffer[0];
 	writeBuffer = writeBuffer == DMDBuffer[0] ? DMDBuffer[1] : DMDBuffer[0];

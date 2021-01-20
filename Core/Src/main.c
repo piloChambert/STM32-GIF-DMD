@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "dma.h"
 #include "fatfs.h"
 #include "rtc.h"
@@ -66,6 +67,8 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define LERP(A, B, X) (A * (1.0f - X) + B * X)
+
 void SendUART(char *txt) {
 #if 0
 	while(CDC_Transmit_FS(txt, strlen(txt)) == USBD_BUSY) {
@@ -109,7 +112,7 @@ struct {
 	uint8_t value;
 	uint8_t state;
 } keys[] = {
-		{GPIOA, GPIO_PIN_0, 0, 0},
+		{GPIOB, GPIO_PIN_10, 0, 0},
 		{GPIOA, GPIO_PIN_5, 0, 0},
 		{GPIOA, GPIO_PIN_7, 0, 0},
 		{GPIOA, GPIO_PIN_9, 0, 0},
@@ -148,6 +151,18 @@ void UpdateKeyState() {
 		}
 	}
 }
+
+// this is saved in RTC register
+struct {
+	unsigned int randomPlay : 1;
+	unsigned int clockDisplayInterval : 3; // 10s increment, from 0 (never) to 7 which is always (no gif)
+	unsigned int clockDisplayTime : 3; // 10s increment, if clockDisplayInterval is not 0
+	unsigned int luminosityMax : 7; // % of luminosity
+	unsigned int luminosityMin : 7; // % of luminosity
+} Configuration;
+
+uint32_t currentGIFFileIndex = 0;
+float ambientlLuminosity = 1.0f;
 
 int queuedFrame = 0;
 GIFError QueueNextGifStreamFrame() {
@@ -203,8 +218,13 @@ void LoadGIFFile(const char *path) {
 
 char GIFFilename[512];
 void LoadNextGifFile() {
-	//NextGIFFilename(GIFFilename);
-	GetFilenameAtIndex(rand() % FileManager.fileCount, GIFFilename); // random
+	if(Configuration.randomPlay)
+		currentGIFFileIndex = rand() % FileManager.fileCount; // use GDC 2017 noise based RNG
+	GetFilenameAtIndex(currentGIFFileIndex, GIFFilename);
+
+	if(!Configuration.randomPlay)
+		currentGIFFileIndex++;
+
 	LoadGIFFile(GIFFilename);
 }
 
@@ -248,14 +268,19 @@ void StartState();
 void CardErrorState();
 void GIFFileState();
 void ClockState();
-void SetClockState();
-void MenuState();
 
+void MainMenuState();
+void DirectoryMenuState();
+void SetClockState();
+void SettingsMenuState();
 
 stateFunction currentState = StartState;
 uint32_t prevFrameTick = 0;
 uint32_t frameTick = 0;
 uint32_t clockStartTick = 0;
+uint32_t gifStartTick = 0;
+uint32_t luminosityStartTick = 0;
+uint8_t luminosityVisible = 0;
 
 // Menu drawing
 uint8_t menuFrame[128 * 32];
@@ -274,6 +299,7 @@ void SetState(stateFunction func) {
 	}
 
 	else if(func == GIFFileState) {
+		gifStartTick = HAL_GetTick();
 		LoadNextGifFile();
 	}
 
@@ -287,9 +313,16 @@ void SetState(stateFunction func) {
 		clockStartTick = HAL_GetTick();
 	}
 
-	else if(func == MenuState) {
+	else if(func == DirectoryMenuState) {
 		CodePalette((uint8_t *)menuFont.palette, menuPalette, 256);
-		clockStartTick = HAL_GetTick();
+	}
+
+	else if(func == SettingsMenuState) {
+		CodePalette((uint8_t *)menuFont.palette, menuPalette, 256);
+	}
+
+	else if(func == MainMenuState) {
+		CodePalette((uint8_t *)menuFont.palette, menuPalette, 256);
 	}
 
 	currentState = func;
@@ -322,34 +355,30 @@ GIFError UpdateGIF() {
 	return err;
 }
 
-#define LUMINOSITY_GAMMA 2.2f
-uint32_t luminosityTimer = 0;
-int luminosityVisible = 0;
-void UpdateLuminosity() {
-	float lum = powf(luminosityAttenuation, 1.0f / LUMINOSITY_GAMMA);
-	if(keys[KEY_A].state & KEY_UP_EVENT) {
-		lum = MIN(lum + 0.05f, 1.0f);
-		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
 
-		luminosityTimer = HAL_GetTick();
+void UpdateLuminosity() {
+	if(keys[KEY_A].state & KEY_UP_EVENT) {
+		Configuration.luminosityMin = MIN(Configuration.luminosityMin + 5 * (1.0f - ambientlLuminosity), 100);
+		Configuration.luminosityMax = MIN(Configuration.luminosityMax + 5 * ambientlLuminosity, 100);
+
+		luminosityStartTick = HAL_GetTick();
 		luminosityVisible = 1;
 	}
 	if(keys[KEY_B].state & KEY_UP_EVENT) {
-		lum = MAX(lum - 0.05f, 0.0f);
-		luminosityAttenuation = powf(lum, LUMINOSITY_GAMMA);
+		Configuration.luminosityMin = MIN(Configuration.luminosityMin - 5 * (1.0f - ambientlLuminosity), 100);
+		Configuration.luminosityMax = MIN(Configuration.luminosityMax - 5 * ambientlLuminosity, 100);
 
-		luminosityTimer = HAL_GetTick();
+		luminosityStartTick = HAL_GetTick();
 		luminosityVisible = 1;
 	}
 
+	int v = LERP(Configuration.luminosityMin, Configuration.luminosityMax, ambientlLuminosity);
 	if(luminosityVisible) {
-		if(HAL_GetTick() - luminosityTimer > 2000) {
+		if(HAL_GetTick() - luminosityStartTick > 20000) {
 			luminosityVisible = 0;
 		}
 		else {
 			// draw luminosity progress bar over current frame
-			uint8_t v = lum * 100.0f;
-
 			for(uint32_t p = 0; p < 8; p++) {
 				for(uint32_t y = 12; y < 16; y++) {
 					for(uint32_t x = 13; x < 115; x++) {
@@ -376,7 +405,10 @@ void StartState() {
 		// if there's a car
 		if(BSP_PlatformIsDetected() == SD_PRESENT && !InitSDCard()) {
 			// switch to file state
-			SetState(ClockState);
+			if(Configuration.clockDisplayInterval != 0)
+				SetState(ClockState);
+			else
+				SetState(GIFFileState);
 		}
 		else {
 			// switch to error state
@@ -418,11 +450,14 @@ void CardErrorState() {
 void GIFFileState() {
 	GIFError err = UpdateGIF();
 	if(err == GIF_STREAM_FINISHED) {
-		// load a new gif
-		//LoadNextGifFile();
+		// how long?
+		if(Configuration.clockDisplayInterval == 0 || HAL_GetTick() - gifStartTick < Configuration.clockDisplayInterval * 1000) {
+			LoadNextGifFile();
+		}
 	}
 
 	else if(err == GIF_NO_MORE_QUEUED_FRAME) {
+		// we get there only if there's no more gif frame, ie, it's time to show the clock!
 		SetState(ClockState);
 	}
 
@@ -432,7 +467,7 @@ void GIFFileState() {
 	}
 
 	else if((keys[KEY_C].state & 0x04)) {
-		SetState(MenuState);
+		SetState(MainMenuState);
 	}
 
 	UpdateLuminosity();
@@ -489,11 +524,11 @@ void ClockState() {
 	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 	UpdateLuminosity();
 
-	if(HAL_GetTick() - clockStartTick > 5000)
+	if(Configuration.clockDisplayInterval != 7 && HAL_GetTick() - clockStartTick > Configuration.clockDisplayTime * 10000)
 		SetState(GIFFileState);
 
 	else if((keys[KEY_C].state & KEY_UP_EVENT)) {
-		SetState(MenuState);
+		SetState(MainMenuState);
 	}
 
 }
@@ -505,7 +540,7 @@ void SetClockState() {
 
 	DrawTime(30, 8, 1 << digit);
 
-	if((keys[KEY_C].state & KEY_UP_EVENT)) {
+	if((keys[KEY_D].state & KEY_UP_EVENT)) {
 		digit++;
 		if(digit == 2)
 			digit = 0;
@@ -544,9 +579,14 @@ void SetClockState() {
 		HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
 	}
 
-	swapBufferRequest = 1;
-	while(swapBufferRequest) { }
-	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+	if(keys[KEY_C].state & KEY_UP_EVENT) {
+		SetState(MainMenuState);
+	}
+	else {
+		swapBufferRequest = 1;
+		while(swapBufferRequest) { }
+		EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+	}
 
 }
 
@@ -583,7 +623,7 @@ void PrintMenuStr(const char *str, int32_t x, int32_t y) {
 
 int y = 0;
 int selectedDirectory = 0;
-void MenuState() {
+void DirectoryMenuState() {
 	// erase bg
 	memset(menuFrame, 0x03, 128 * 32);
 
@@ -608,7 +648,7 @@ void MenuState() {
 	}
 
 	if(keys[KEY_C].state & KEY_UP_EVENT) {
-		SetState(ClockState);
+		SetState(MainMenuState);
 	}
 
 	if(keys[KEY_D].state & KEY_UP_EVENT) {
@@ -628,6 +668,77 @@ void MenuState() {
 		EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 	}
 }
+
+int selectedItem = 0;
+int settingsMenuOffset = 0;
+void SettingsMenuState() {
+	memset(menuFrame, 0x03, 128 * 32);
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+}
+
+void MainMenuState() {
+	memset(menuFrame, 0x03, 128 * 32);
+
+	// print menu item
+	PrintMenuStr("Exit", 9, 0 + settingsMenuOffset);
+	PrintMenuStr("Settings", 9, 10 + settingsMenuOffset);
+	PrintMenuStr("Directories", 9, 20 + settingsMenuOffset);
+	PrintMenuStr("Clock", 9, 30 + settingsMenuOffset);
+
+	// cursor
+	PrintMenuChar(0, 1, selectedItem * 10 + settingsMenuOffset);
+
+	if((keys[KEY_A].state & KEY_UP_EVENT) && selectedItem < 3) {
+		selectedItem++;
+	}
+	if((keys[KEY_B].state & KEY_UP_EVENT) && selectedItem > 0) {
+		selectedItem--;
+	}
+
+	if(keys[KEY_C].state & KEY_UP_EVENT) {
+		if(Configuration.clockDisplayInterval != 0)
+			SetState(ClockState);
+		else
+			SetState(GIFFileState);
+	}
+
+	if(keys[KEY_D].state & KEY_UP_EVENT) {
+		switch(selectedItem) {
+		case 0:
+			if(Configuration.clockDisplayInterval != 0)
+				SetState(ClockState);
+			else
+				SetState(GIFFileState);
+			break;
+		case 1:
+			break;
+		case 2:
+			SetState(DirectoryMenuState);
+			break;
+		case 3:
+			SetState(SetClockState);
+			break;
+		}
+	}
+
+	// scroll
+	if(selectedItem * 10 + settingsMenuOffset < 0)
+		settingsMenuOffset += 2;
+
+	if(selectedItem * 10 + 9 + settingsMenuOffset > 32)
+		settingsMenuOffset -= 2;
+
+
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+}
+
+
 
 /* USER CODE END 0 */
 
@@ -665,6 +776,7 @@ int main(void)
   MX_TIM1_Init();
   MX_SDIO_SD_Init();
   MX_RTC_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -672,23 +784,34 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
+  // default configuration
+  Configuration.randomPlay = 1;
+  Configuration.clockDisplayInterval = 0;
+  Configuration.clockDisplayTime = 1;
+  Configuration.luminosityMin = 10;
+  Configuration.luminosityMax = 100;
+
   //HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x02);
   uint32_t v = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
   if(v != 0x88) {
 	  printf("OUch");
   }
 
-
   //LoadGIFFile("Computers/AMIGA_MonkeyIsland01.gif");
   //LoadNextGif();
 
+  // init rand
   srand(hrtc.Instance->TR);
-  SetState(StartState);
 
   prevFrameTick = HAL_GetTick();
   frameTick = 0;
 
   DMDInit();
+
+  // start ambient light capture
+  HAL_ADC_Start(&hadc1);
+
+  SetState(StartState);
 
   while (1)
   {
@@ -700,6 +823,24 @@ int main(void)
 
 	  // run current state
 	  currentState();
+
+	  // detect light
+
+	  if(HAL_ADC_PollForConversion(&hadc1, 0) == HAL_OK) {
+		  float adcLum = HAL_ADC_GetValue(&hadc1);
+
+#define ADC_LUM_MIN 80
+#define ADC_LUM_MAX 1400
+		  adcLum = MAX(0.0f, MIN(1.0f, (adcLum - ADC_LUM_MIN) / (ADC_LUM_MAX - ADC_LUM_MIN)));
+
+		  // Low pass filter
+		  float a = 0.9f;
+		  ambientlLuminosity = ambientlLuminosity * a + adcLum * (1.0f - a);
+
+		  // set lum
+		  SetDMDLuminosity(LERP(Configuration.luminosityMin, Configuration.luminosityMax, ambientlLuminosity));
+		  HAL_ADC_Start(&hadc1);
+	  }
   }
   /* USER CODE END 3 */
 }
