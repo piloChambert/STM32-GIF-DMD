@@ -98,10 +98,10 @@ void printf2(char *format, ...) {
 #define KEY_REPEAT_TIME 150 // ms
 
 enum keys {
-	KEY_A = 0,
-	KEY_B,
-	KEY_C,
-	KEY_D
+	KEY_UP = 0,
+	KEY_DOWN,
+	KEY_MENU,
+	KEY_OK
 };
 struct {
 	GPIO_TypeDef *port;
@@ -135,15 +135,15 @@ void UpdateKeyState() {
 			keys[i].value--;
 
 		if(keys[i].state == 0 && keys[i].value == KEY_DEBOUNCE_THRESHOLD) {
-			keys[i].state = 1 + KEY_UP_EVENT; // set to up state and set up event
+			keys[i].state = 1 + KEY_DOWN_EVENT; // set to up state and set down event
 			keys[i].repeatTime = currentTime + KEY_FIRST_REPEAT_TIME;
 		}
 		else if(keys[i].state == 1 && keys[i].value == 0)
-			keys[i].state = KEY_DOWN_EVENT; // set to down state and set down event
+			keys[i].state = KEY_UP_EVENT; // set to down state and set down event
 		else {
 			// key repeat
 			if((keys[i].state & 0x01) && (currentTime > keys[i].repeatTime)) {
-				keys[i].state |= KEY_UP_EVENT + KEY_REPEAT_EVENT; // generate event
+				keys[i].state |= KEY_DOWN_EVENT + KEY_REPEAT_EVENT; // generate event
 				keys[i].repeatTime = currentTime + KEY_REPEAT_TIME; // reset time
 			}
 			else
@@ -223,7 +223,7 @@ void LoadNextGifFile() {
 	GetFilenameAtIndex(currentGIFFileIndex, GIFFilename);
 
 	if(!Configuration.randomPlay)
-		currentGIFFileIndex++;
+		currentGIFFileIndex = (currentGIFFileIndex + 1) % FileManager.fileCount;
 
 	LoadGIFFile(GIFFilename);
 }
@@ -357,14 +357,14 @@ GIFError UpdateGIF() {
 
 
 void UpdateLuminosity() {
-	if(keys[KEY_A].state & KEY_UP_EVENT) {
+	if(keys[KEY_UP].state & KEY_DOWN_EVENT) {
 		Configuration.luminosityMin = MIN(Configuration.luminosityMin + 5 * (1.0f - ambientlLuminosity), 100);
 		Configuration.luminosityMax = MIN(Configuration.luminosityMax + 5 * ambientlLuminosity, 100);
 
 		luminosityStartTick = HAL_GetTick();
 		luminosityVisible = 1;
 	}
-	if(keys[KEY_B].state & KEY_UP_EVENT) {
+	if(keys[KEY_DOWN].state & KEY_DOWN_EVENT) {
 		Configuration.luminosityMin = MIN(Configuration.luminosityMin - 5 * (1.0f - ambientlLuminosity), 100);
 		Configuration.luminosityMax = MIN(Configuration.luminosityMax - 5 * ambientlLuminosity, 100);
 
@@ -451,7 +451,7 @@ void GIFFileState() {
 	GIFError err = UpdateGIF();
 	if(err == GIF_STREAM_FINISHED) {
 		// how long?
-		if(Configuration.clockDisplayInterval == 0 || HAL_GetTick() - gifStartTick < Configuration.clockDisplayInterval * 1000) {
+		if(Configuration.clockDisplayInterval == 0 || HAL_GetTick() - gifStartTick < Configuration.clockDisplayInterval * 10000) {
 			LoadNextGifFile();
 		}
 	}
@@ -466,7 +466,7 @@ void GIFFileState() {
 		SetState(CardErrorState);
 	}
 
-	else if((keys[KEY_C].state & 0x04)) {
+	else if((keys[KEY_MENU].state & KEY_DOWN_EVENT)) {
 		SetState(MainMenuState);
 	}
 
@@ -524,10 +524,10 @@ void ClockState() {
 	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 	UpdateLuminosity();
 
-	if(Configuration.clockDisplayInterval != 7 && HAL_GetTick() - clockStartTick > Configuration.clockDisplayTime * 10000)
+	if(Configuration.clockDisplayInterval != 0x07 && HAL_GetTick() - clockStartTick > Configuration.clockDisplayTime * 10000)
 		SetState(GIFFileState);
 
-	else if((keys[KEY_C].state & KEY_UP_EVENT)) {
+	else if((keys[KEY_MENU].state & KEY_DOWN_EVENT)) {
 		SetState(MainMenuState);
 	}
 
@@ -540,7 +540,7 @@ void SetClockState() {
 
 	DrawTime(30, 8, 1 << digit);
 
-	if((keys[KEY_D].state & KEY_UP_EVENT)) {
+	if((keys[KEY_OK].state & KEY_DOWN_EVENT)) {
 		digit++;
 		if(digit == 2)
 			digit = 0;
@@ -551,7 +551,7 @@ void SetClockState() {
 	RTC_DateTypeDef date;
 	HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN);
 
-	if((keys[KEY_A].state & KEY_UP_EVENT)) {
+	if((keys[KEY_UP].state & KEY_DOWN_EVENT)) {
 		switch (digit){
 			case 0:
 				time.Hours = (time.Hours + 1) % 24;
@@ -565,7 +565,7 @@ void SetClockState() {
 		HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
 	}
 
-	if((keys[KEY_B].state & KEY_UP_EVENT)) {
+	if((keys[KEY_DOWN].state & KEY_DOWN_EVENT)) {
 		switch (digit){
 			case 0:
 				time.Hours = (time.Hours + 24 - 1) % 24;
@@ -579,7 +579,7 @@ void SetClockState() {
 		HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
 	}
 
-	if(keys[KEY_C].state & KEY_UP_EVENT) {
+	if(keys[KEY_MENU].state & KEY_DOWN_EVENT) {
 		SetState(MainMenuState);
 	}
 	else {
@@ -621,47 +621,51 @@ void PrintMenuStr(const char *str, int32_t x, int32_t y) {
 	}
 }
 
-int y = 0;
-int selectedDirectory = 0;
+int directoryMenuOffset = 0;
+int directoryMenuSelectedItem = 0;
 void DirectoryMenuState() {
 	// erase bg
 	memset(menuFrame, 0x03, 128 * 32);
 
+	PrintMenuStr("Exit", 9, 0 + directoryMenuOffset);
+
 	char dirName[255];
-
-	int firstIdx = MAX(y - 11, 0) / 10;
-
+	int firstIdx = MAX(-directoryMenuOffset - 10, 0) / 10;
 	for(int i = firstIdx; i < MIN(firstIdx + 4, FileManager.directoryCount); i++) {
 		GetDirectoryAtIndex(i, dirName);
-		if(i == selectedDirectory)
-			PrintMenuChar(0, 1, i * 10 - y + 11);
-
-		PrintMenuChar(FileManager.directories[i].enable ? 2 : 1, 10, i * 10 - y + 11);
-		PrintMenuStr(dirName, 19, i *  10 - y + 11);
+		PrintMenuChar(FileManager.directories[i].enable ? 2 : 1, 10, (i + 1) * 10 + directoryMenuOffset);
+		PrintMenuStr(dirName, 19, (i + 1) *  10 + directoryMenuOffset);
 	}
 
-	if((keys[KEY_A].state & KEY_UP_EVENT) && selectedDirectory < FileManager.directoryCount - 1) {
-		selectedDirectory++;
+	// cursor
+	PrintMenuChar(0, 1, directoryMenuSelectedItem * 10 + directoryMenuOffset);
+
+	if((keys[KEY_DOWN].state & KEY_DOWN_EVENT) && directoryMenuSelectedItem < FileManager.directoryCount) {
+		directoryMenuSelectedItem++;
 	}
-	if((keys[KEY_B].state & KEY_UP_EVENT) && selectedDirectory > 0) {
-		selectedDirectory--;
+	if((keys[KEY_UP].state & KEY_DOWN_EVENT) && directoryMenuSelectedItem > 0) {
+		directoryMenuSelectedItem--;
 	}
 
-	if(keys[KEY_C].state & KEY_UP_EVENT) {
-		SetState(MainMenuState);
-	}
-
-	if(keys[KEY_D].state & KEY_UP_EVENT) {
-		FileManager.directories[selectedDirectory].enable = !FileManager.directories[selectedDirectory].enable;
-		UpdateFileCount();
+	if(keys[KEY_OK].state & KEY_DOWN_EVENT) {
+		if(directoryMenuSelectedItem == 0)
+			SetState(MainMenuState);
+		else {
+			FileManager.directories[directoryMenuSelectedItem - 1].enable = !FileManager.directories[directoryMenuSelectedItem - 1].enable;
+			UpdateFileCount();
+			if(Configuration.randomPlay)
+				currentGIFFileIndex = rand() % FileManager.fileCount;
+			else
+				currentGIFFileIndex = 0;
+		}
 	}
 
 	else {
 		// scroll
-		if(y < selectedDirectory * 10)
-			y += 2;
-		else if(y > selectedDirectory * 10)
-			y -= 2;
+		if(directoryMenuSelectedItem * 10 + directoryMenuOffset < 0)
+			directoryMenuOffset += 2;
+		else if(directoryMenuSelectedItem * 10 + 9 + directoryMenuOffset > 32)
+			directoryMenuOffset -= 2;
 
 		swapBufferRequest = 1;
 		while(swapBufferRequest) { }
@@ -669,44 +673,118 @@ void DirectoryMenuState() {
 	}
 }
 
-int selectedItem = 0;
+int settingsMenuSelectedItem = 0;
 int settingsMenuOffset = 0;
 void SettingsMenuState() {
 	memset(menuFrame, 0x03, 128 * 32);
 
-	swapBufferRequest = 1;
-	while(swapBufferRequest) { }
-	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
-}
-
-void MainMenuState() {
-	memset(menuFrame, 0x03, 128 * 32);
-
 	// print menu item
 	PrintMenuStr("Exit", 9, 0 + settingsMenuOffset);
-	PrintMenuStr("Settings", 9, 10 + settingsMenuOffset);
-	PrintMenuStr("Directories", 9, 20 + settingsMenuOffset);
-	PrintMenuStr("Clock", 9, 30 + settingsMenuOffset);
+	if(Configuration.randomPlay) {
+		PrintMenuStr("Random  [On]", 9, 10 + settingsMenuOffset);
+		currentGIFFileIndex = rand() % FileManager.fileCount;
+	}
+	else {
+		PrintMenuStr("Random  [Off]", 9, 10 + settingsMenuOffset);
+		currentGIFFileIndex = 0;
+	}
+
+	// clock display interval
+	char buff[16];
+	PrintMenuStr("Clock", 9, 20 + settingsMenuOffset);
+	if(!Configuration.clockDisplayInterval)
+		PrintMenuStr("Disabled", 54, 20 + settingsMenuOffset);
+	else if(Configuration.clockDisplayInterval == 0x07)
+		PrintMenuStr("Always", 54, 20 + settingsMenuOffset);
+	else {
+		sprintf(buff, "Every %ds", Configuration.clockDisplayInterval * 10);
+		PrintMenuStr(buff, 54, 20 + settingsMenuOffset);
+	}
+
+	// clock display time
+	sprintf(buff, "for %ds", Configuration.clockDisplayTime * 10);
+	PrintMenuStr(buff, 9, 30 + settingsMenuOffset);
 
 	// cursor
-	PrintMenuChar(0, 1, selectedItem * 10 + settingsMenuOffset);
+	PrintMenuChar(0, 1, settingsMenuSelectedItem * 10 + settingsMenuOffset);
 
-	if((keys[KEY_A].state & KEY_UP_EVENT) && selectedItem < 3) {
-		selectedItem++;
+	if((keys[KEY_DOWN].state & KEY_DOWN_EVENT) && settingsMenuSelectedItem < 3) {
+		settingsMenuSelectedItem++;
 	}
-	if((keys[KEY_B].state & KEY_UP_EVENT) && selectedItem > 0) {
-		selectedItem--;
+	if((keys[KEY_UP].state & KEY_DOWN_EVENT) && settingsMenuSelectedItem > 0) {
+		settingsMenuSelectedItem--;
 	}
 
-	if(keys[KEY_C].state & KEY_UP_EVENT) {
+	if(keys[KEY_MENU].state & KEY_DOWN_EVENT) {
 		if(Configuration.clockDisplayInterval != 0)
 			SetState(ClockState);
 		else
 			SetState(GIFFileState);
 	}
 
-	if(keys[KEY_D].state & KEY_UP_EVENT) {
-		switch(selectedItem) {
+	if(keys[KEY_OK].state & KEY_DOWN_EVENT) {
+		switch(settingsMenuSelectedItem) {
+		case 0:
+			SetState(MainMenuState);
+			break;
+		case 1:
+			Configuration.randomPlay = !Configuration.randomPlay;
+			break;
+		case 2:
+			Configuration.clockDisplayInterval++;
+			break;
+		case 3:
+			Configuration.clockDisplayTime++;
+			if(!Configuration.clockDisplayTime)
+				Configuration.clockDisplayTime = 1; // 10s min
+			break;
+		}
+	}
+
+	// scroll
+	if(settingsMenuSelectedItem * 10 + settingsMenuOffset < 0)
+		settingsMenuOffset += 2;
+
+	if(settingsMenuSelectedItem * 10 + 9 + settingsMenuOffset > 32)
+		settingsMenuOffset -= 2;
+
+
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
+}
+
+int mainMenuSelectedItem = 0;
+int mainMenuOffset = 0;
+void MainMenuState() {
+	memset(menuFrame, 0x03, 128 * 32);
+
+	// print menu item
+	PrintMenuStr("Exit", 9, 0 + mainMenuOffset);
+	PrintMenuStr("Settings", 9, 10 + mainMenuOffset);
+	PrintMenuStr("Directories", 9, 20 + mainMenuOffset);
+	PrintMenuStr("Clock", 9, 30 + mainMenuOffset);
+
+	// cursor
+	PrintMenuChar(0, 1, mainMenuSelectedItem * 10 + mainMenuOffset);
+
+	if((keys[KEY_DOWN].state & KEY_DOWN_EVENT) && mainMenuSelectedItem < 3) {
+		mainMenuSelectedItem++;
+	}
+	if((keys[KEY_UP].state & KEY_DOWN_EVENT) && mainMenuSelectedItem > 0) {
+		mainMenuSelectedItem--;
+	}
+
+	if(keys[KEY_MENU].state & KEY_DOWN_EVENT) {
+		if(Configuration.clockDisplayInterval != 0)
+			SetState(ClockState);
+		else
+			SetState(GIFFileState);
+	}
+
+	if(keys[KEY_OK].state & KEY_DOWN_EVENT) {
+		switch(mainMenuSelectedItem) {
 		case 0:
 			if(Configuration.clockDisplayInterval != 0)
 				SetState(ClockState);
@@ -714,6 +792,7 @@ void MainMenuState() {
 				SetState(GIFFileState);
 			break;
 		case 1:
+			SetState(SettingsMenuState);
 			break;
 		case 2:
 			SetState(DirectoryMenuState);
@@ -725,11 +804,11 @@ void MainMenuState() {
 	}
 
 	// scroll
-	if(selectedItem * 10 + settingsMenuOffset < 0)
-		settingsMenuOffset += 2;
+	if(mainMenuSelectedItem * 10 + mainMenuOffset < 0)
+		mainMenuOffset += 2;
 
-	if(selectedItem * 10 + 9 + settingsMenuOffset > 32)
-		settingsMenuOffset -= 2;
+	if(mainMenuSelectedItem * 10 + 9 + mainMenuOffset > 32)
+		mainMenuOffset -= 2;
 
 
 
@@ -738,6 +817,93 @@ void MainMenuState() {
 	EncodeFrameToDMDBuffer(menuFrame, menuPalette);
 }
 
+// H : 0..360
+// S : 0..1
+// V : 0..1
+// rgb: uint8_t[3]
+void HSVtoRGB(float h, float s, float v, uint8_t *rgb) {
+    float c = s*v;
+    float x = c * (1.0f - fabs(fmod(h / 60.0f, 2.0f) - 1.0f));
+    float m = v - c;
+
+    float r, g, b;
+    if(h >= 300.0f) {
+        r = c;
+        g = 0.0f;
+        b = x;
+    }
+
+    else if(h >= 240.0f) {
+        r = x;
+        g = 0.0f;
+        b = c;
+    }
+
+    else if(h >= 180.0f) {
+        r = 0.0f;
+        g = x;
+        b = c;
+    }
+
+    else if(h >= 120.0f) {
+        r = 0.0f;
+        g = c;
+        b = x;
+    }
+
+    else if(h > 60.0f) {
+        r = x;
+        g = c;
+        b = 0.0f;
+    }
+
+    else {
+        r = c;
+        g = x;
+        b = 0.0f;
+    }
+
+    rgb[0] = (r + m) * 255.0f;
+    rgb[1] = (g + m) * 255.0f;
+    rgb[2] = (b + m) * 255.0f;
+}
+
+#if 0
+uint8_t testPalette[256 * 3];
+uint8_t codedTestPalette[256 * 8];
+uint8_t testFrame[4096];
+
+double time = 0.0;
+uint32_t prevTick = 0;
+
+void ColorTestState() {
+	float h = 360.0f * (sin(M_PI * 2.0f * time * 0.1f) * 0.5f + 0.5f);
+	float s = (sin(M_PI * 2.0f * time * 1.0f) * 0.5f + 0.5f);
+
+	// create palette for this frame
+	for(int i = 0; i < 256; i++) {
+		HSVtoRGB(h, s, 1.0f - i / 255.0f, &testPalette[i * 3]);
+	}
+
+	CodePalette(testPalette, codedTestPalette, 256);
+
+	// create image
+	for(int y = 0; y < 32; y++) {
+		for(int x = 0; x < 128; x++) {
+			testFrame[x + y * 128] = x + y * 4;
+		}
+	}
+
+	swapBufferRequest = 1;
+	while(swapBufferRequest) { }
+	EncodeFrameToDMDBuffer(testFrame, codedTestPalette);
+
+	uint32_t current = HAL_GetTick();
+	double dt = (current - prevTick) * 0.001;
+	time += dt;
+	prevTick = current;
+}
+#endif
 
 
 /* USER CODE END 0 */
