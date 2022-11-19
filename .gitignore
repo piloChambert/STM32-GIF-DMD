@@ -7,3 +7,6 @@ Debug/USB_DEVICE/Target/usbd_conf.o
 Debug/makefile
 Debug/STM32 GIF DMD.elf
 Debug/objects.list
+Debug/STM32 GIF DMD.bin
+Debug/STM32 GIF DMD.list
+Debug/STM32 GIF DMD.map
