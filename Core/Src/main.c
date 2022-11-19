@@ -218,12 +218,21 @@ void LoadGIFFile(const char *path) {
 
 char GIFFilename[512];
 void LoadNextGifFile() {
-	if(Configuration.randomPlay)
-		currentGIFFileIndex = rand() % FileManager.fileCount; // use GDC 2017 noise based RNG
-	GetFilenameAtIndex(currentGIFFileIndex, GIFFilename);
+	// load only .gif file
+	int stop = 0;
+	while(!stop) {
+		if(Configuration.randomPlay)
+			currentGIFFileIndex = rand() % FileManager.fileCount; // use GDC 2017 noise based RNG
 
-	if(!Configuration.randomPlay)
-		currentGIFFileIndex = (currentGIFFileIndex + 1) % FileManager.fileCount;
+		GetFilenameAtIndex(currentGIFFileIndex, GIFFilename);
+
+		if(!Configuration.randomPlay)
+			currentGIFFileIndex = (currentGIFFileIndex + 1) % FileManager.fileCount;
+
+		int l = strlen(GIFFilename);
+		if(l > 5 && strcasecmp(GIFFilename + l - 4, ".gif") == 0)
+			stop = 1;
+	}
 
 	LoadGIFFile(GIFFilename);
 }

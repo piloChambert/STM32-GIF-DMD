@@ -1,0 +1,9 @@
+.settings/stm32cubeide.project.prefs
+*.d
+Debug/USB_DEVICE/Target/usbd_conf.o
+*.o
+*.su
+*.mk
+Debug/makefile
+Debug/STM32 GIF DMD.elf
+Debug/objects.list
